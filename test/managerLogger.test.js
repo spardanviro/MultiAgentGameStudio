@@ -4,7 +4,8 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const os = require('node:os');
 
-const { getProjectLogPath, logEvent, readLogs } = require('../src/managerLogger');
+const { DEFAULT_APP_DATA_DIR, getAppDataDir } = require('../src/appPaths');
+const { getAppLogPath, getProjectLogPath, logEvent, readLogs } = require('../src/managerLogger');
 
 test('manager logger writes project log and reads it back', async () => {
   const projectRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'manager-log-project-'));
@@ -18,5 +19,19 @@ test('manager logger writes project log and reads it back', async () => {
   assert.match(projectLog, /"value":42/);
   assert.equal(logs.projectLogPath, projectLogPath);
   assert.match(logs.projectLog, /test\.event/);
-  assert.ok(logs.appLogPath.endsWith(path.join('.multiagent-manager', 'logs', 'manager.log')));
+  assert.equal(logs.appLogPath, path.join(getAppDataDir(), 'logs', 'manager.log'));
+});
+
+test('app log is redirected away from the real app data dir during tests', async () => {
+  assert.notEqual(getAppDataDir(), DEFAULT_APP_DATA_DIR);
+  await logEvent('test.isolation', { marker: 'isolated' });
+
+  const appLog = await fs.readFile(getAppLogPath(), 'utf8');
+  assert.match(appLog, /test.isolation/);
+  assert.ok(!getAppLogPath().startsWith(DEFAULT_APP_DATA_DIR));
+});
+
+test('getAppDataDir honors MULTIAGENT_MANAGER_HOME and falls back to the repo dir', () => {
+  assert.equal(getAppDataDir({ MULTIAGENT_MANAGER_HOME: 'C:/custom/home' }), path.resolve('C:/custom/home'));
+  assert.equal(getAppDataDir({}), DEFAULT_APP_DATA_DIR);
 });

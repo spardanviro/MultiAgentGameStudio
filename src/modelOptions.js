@@ -4,6 +4,7 @@ const https = require('node:https');
 const path = require('node:path');
 const { promisify } = require('node:util');
 
+const { getAppDataPath } = require('./appPaths');
 const { buildClaudeInvocation } = require('./claudeCli');
 
 const execFileAsync = promisify(execFile);
@@ -37,7 +38,7 @@ function nowIso() {
 }
 
 function getOptionsPath() {
-  return path.join(process.cwd(), '.multiagent-manager', 'model-options.json');
+  return getAppDataPath('model-options.json');
 }
 
 function labelForModel(id) {

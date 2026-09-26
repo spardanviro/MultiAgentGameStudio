@@ -4,18 +4,15 @@ const https = require('node:https');
 const path = require('node:path');
 const crypto = require('node:crypto');
 
-const PROVIDER_PROFILES_PATH = path.resolve(
-  __dirname,
-  '..',
-  '.multiagent-manager',
-  'provider-profiles.json',
-);
-const PROVIDER_SECRET_KEY_PATH = path.resolve(
-  __dirname,
-  '..',
-  '.multiagent-manager',
-  'provider-secret.key',
-);
+const { getAppDataPath } = require('./appPaths');
+
+function getProviderProfilesPath() {
+  return getAppDataPath('provider-profiles.json');
+}
+
+function getProviderSecretKeyPath() {
+  return getAppDataPath('provider-secret.key');
+}
 const DEFAULT_PROVIDER_ID = 'claude-subscription';
 const DEFAULT_PROFILE = {
   id: DEFAULT_PROVIDER_ID,
@@ -307,7 +304,7 @@ async function writeJson(filePath, value) {
 }
 
 async function getSecretKey(options = {}) {
-  const filePath = options.secretKeyPath || PROVIDER_SECRET_KEY_PATH;
+  const filePath = options.secretKeyPath || getProviderSecretKeyPath();
   try {
     return Buffer.from((await fs.readFile(filePath, 'utf8')).trim(), 'base64');
   } catch {
@@ -366,7 +363,7 @@ async function prepareProfileForSave(profile, options = {}) {
 }
 
 async function getProviderProfiles(options = {}) {
-  const filePath = options.filePath || PROVIDER_PROFILES_PATH;
+  const filePath = options.filePath || getProviderProfilesPath();
   const raw = await readJsonIfExists(filePath);
   const profiles = [DEFAULT_PROFILE];
   if (Array.isArray(raw?.profiles)) {
@@ -384,7 +381,7 @@ async function getProviderProfiles(options = {}) {
 }
 
 async function saveProviderProfiles(profiles, options = {}) {
-  const filePath = options.filePath || PROVIDER_PROFILES_PATH;
+  const filePath = options.filePath || getProviderProfilesPath();
   const normalized = [];
   for (const profile of profiles) {
     const entry = await prepareProfileForSave(profile, options);
@@ -560,13 +557,13 @@ module.exports = {
   DEFAULT_PROFILE,
   DEFAULT_PROVIDER_ID,
   PROVIDER_PRESETS,
-  PROVIDER_PROFILES_PATH,
   buildProviderEnv,
   buildProviderEnvAsync,
   decryptSecret,
   encryptSecret,
   extractGatewayModels,
   getProviderPreset,
+  getProviderProfilesPath,
   getProviderPresets,
   getProviderProfile,
   getProviderProfiles,

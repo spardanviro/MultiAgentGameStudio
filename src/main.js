@@ -10,7 +10,7 @@ const {
   readSessionTranscript,
 } = require('./claudeSessions');
 const { buildClaudeInvocation } = require('./claudeCli');
-const { APP_LOG_PATH, getProjectLogPath, logEvent, readLogs } = require('./managerLogger');
+const { getAppLogPath, getProjectLogPath, logEvent, readLogs } = require('./managerLogger');
 const diagnostics = require('./diagnostics');
 const multiAgent = require('./multiAgent');
 const modelOptions = require('./modelOptions');
@@ -45,7 +45,7 @@ function createWindow() {
   });
 
   mainWindow.loadFile(path.join(__dirname, 'renderer', 'index.html'));
-  logEvent('app.window.created', { appLogPath: APP_LOG_PATH });
+  logEvent('app.window.created', { appLogPath: getAppLogPath() });
 }
 
 async function chooseProjectFolder() {
@@ -291,7 +291,7 @@ function registerPlanningHandlers() {
         {
           options,
           claudeVersionCommand: invocation.displayCommand,
-          appLogPath: APP_LOG_PATH,
+          appLogPath: getAppLogPath(),
           projectLogPath: getProjectLogPath(options?.projectRoot),
         },
         { projectRoot: options?.projectRoot },
@@ -514,7 +514,7 @@ function registerLogHandlers() {
   });
 
   ipcMain.handle('logs:showInFolder', async (_event, projectRoot) => {
-    const logPath = projectRoot ? getProjectLogPath(projectRoot) : APP_LOG_PATH;
+    const logPath = projectRoot ? getProjectLogPath(projectRoot) : getAppLogPath();
     await fs.mkdir(path.dirname(logPath), { recursive: true });
     try {
       await fs.access(logPath);
@@ -669,7 +669,7 @@ function registerIpcHandlers() {
 
 app.whenReady().then(() => {
   registerIpcHandlers();
-  logEvent('app.ready', { appLogPath: APP_LOG_PATH });
+  logEvent('app.ready', { appLogPath: getAppLogPath() });
   createWindow();
 
   app.on('activate', () => {

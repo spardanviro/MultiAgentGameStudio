@@ -1,7 +1,11 @@
 const fs = require('node:fs/promises');
 const path = require('node:path');
 
-const APP_LOG_PATH = path.resolve(__dirname, '..', '.multiagent-manager', 'logs', 'manager.log');
+const { getAppDataPath } = require('./appPaths');
+
+function getAppLogPath() {
+  return getAppDataPath('logs', 'manager.log');
+}
 const PROJECT_LOG_RELATIVE_PATH = path.join('.multiagent', 'logs', 'manager.log');
 const DEFAULT_TAIL_BYTES = 240000;
 
@@ -78,7 +82,7 @@ async function logEvent(event, payload = {}, options = {}) {
     ...sanitize(payload),
   };
   const line = JSON.stringify(entry);
-  const paths = [APP_LOG_PATH, getProjectLogPath(projectRoot)].filter(Boolean);
+  const paths = [getAppLogPath(), getProjectLogPath(projectRoot)].filter(Boolean);
 
   for (const filePath of paths) {
     try {
@@ -115,16 +119,17 @@ async function readLogs(options = {}) {
   const projectRoot = options.projectRoot || null;
   const maxBytes = options.maxBytes || DEFAULT_TAIL_BYTES;
   const projectLogPath = getProjectLogPath(projectRoot);
+  const appLogPath = getAppLogPath();
   return {
-    appLogPath: APP_LOG_PATH,
+    appLogPath,
     projectLogPath,
-    appLog: await readTail(APP_LOG_PATH, maxBytes),
+    appLog: await readTail(appLogPath, maxBytes),
     projectLog: projectLogPath ? await readTail(projectLogPath, maxBytes) : '',
   };
 }
 
 module.exports = {
-  APP_LOG_PATH,
+  getAppLogPath,
   PROJECT_LOG_RELATIVE_PATH,
   getProjectLogPath,
   logEvent,

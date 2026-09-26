@@ -1,20 +1,24 @@
 const fs = require('node:fs/promises');
 const path = require('node:path');
+const { getAppDataPath } = require('./appPaths');
 
-const APP_STATE_PATH = path.resolve(__dirname, '..', '.multiagent-manager', 'app-state.json');
+function getAppStatePath() {
+  return getAppDataPath('app-state.json');
+}
 
 async function readAppState() {
   try {
-    return JSON.parse(await fs.readFile(APP_STATE_PATH, 'utf8'));
+    return JSON.parse(await fs.readFile(getAppStatePath(), 'utf8'));
   } catch {
     return {};
   }
 }
 
 async function writeAppState(state) {
-  await fs.mkdir(path.dirname(APP_STATE_PATH), { recursive: true });
-  await fs.writeFile(`${APP_STATE_PATH}.tmp`, `${JSON.stringify(state, null, 2)}\n`, 'utf8');
-  await fs.rename(`${APP_STATE_PATH}.tmp`, APP_STATE_PATH);
+  const statePath = getAppStatePath();
+  await fs.mkdir(path.dirname(statePath), { recursive: true });
+  await fs.writeFile(`${statePath}.tmp`, `${JSON.stringify(state, null, 2)}\n`, 'utf8');
+  await fs.rename(`${statePath}.tmp`, statePath);
 }
 
 async function updateAppState(patch) {
@@ -48,7 +52,7 @@ async function rememberRun(projectRoot, runId) {
 }
 
 module.exports = {
-  APP_STATE_PATH,
+  getAppStatePath,
   readAppState,
   rememberProject,
   rememberRun,

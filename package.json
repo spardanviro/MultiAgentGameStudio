@@ -1,0 +1,25 @@
+{
+  "name": "claude-multi-agent-manager",
+  "version": "0.1.0",
+  "description": "A local Electron manager for Claude Code project sessions.",
+  "main": "src/main.js",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron .",
+    "test": "node --test \"test/**/*.test.js\""
+  },
+  "keywords": [
+    "claude",
+    "claude-code",
+    "electron",
+    "sessions"
+  ],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "electron": "^39.2.7"
+  },
+  "dependencies": {
+    "js-yaml": "^4.2.0"
+  }
+}

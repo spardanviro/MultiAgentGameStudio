@@ -1,0 +1,11 @@
+node_modules/
+dist/
+out/
+.DS_Store
+Thumbs.db
+npm-debug.log*
+
+# Local app state, logs and provider config (machine-specific, may contain secrets)
+.multiagent-manager/
+# Per-project run data written when this repo itself is used as a target project
+.multiagent/

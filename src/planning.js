@@ -1,7 +1,8 @@
 const fs = require('node:fs/promises');
 const path = require('node:path');
 
-const { parseClaudeSessionId, runCommand } = require('./multiAgent');
+const { classifyAgentLifecycle, launchBackgroundAgent, readJobState } = require('./claudeAgents');
+const { runCommand } = require('./multiAgent');
 const { DEFAULT_PROVIDER_ID, buildProviderEnvAsync, getProviderProfile } = require('./providerProfiles');
 
 const PLANNING_STATE_VERSION = 1;
@@ -512,21 +513,16 @@ async function syncClaudeJobState(state) {
     return state;
   }
 
-  const jobStatePath = path.join(
-    process.env.USERPROFILE || process.env.HOME || '',
-    '.claude',
-    'jobs',
-    state.claudeSessionId,
-    'state.json',
-  );
-  if (!(await fileExists(jobStatePath))) {
+  const jobState = await readJobState(state.claudeSessionId);
+  if (!jobState) {
     return state;
   }
 
-  const jobState = JSON.parse(await fs.readFile(jobStatePath, 'utf8'));
-  if (jobState.state === 'blocked' || jobState.needs) {
-    state.status = 'blocked';
-    state.error = jobState.needs || jobState.detail || 'Claude background session is blocked.';
+  // Lifecycle phases (blocked/done/failed/running) map 1:1 onto planning statuses.
+  const { phase, detail } = classifyAgentLifecycle(null, jobState);
+  if (phase !== 'unknown' && (phase !== state.status || detail !== state.error)) {
+    state.status = phase;
+    state.error = detail;
     state.updatedAt = nowIso();
   }
   return state;
@@ -629,9 +625,11 @@ async function startArchitectFromDesignDoc(options = {}) {
       options.providerProfileId || options.provider || DEFAULT_PROVIDER_ID,
       options.providerProfileOptions || {},
     );
-    const result = await runner(
-      'claude',
-      [
+    const launch = await launchBackgroundAgent({
+      runner,
+      name: architectName,
+      cwd: projectRoot,
+      args: [
         '--bg',
         '--name',
         architectName,
@@ -643,21 +641,17 @@ async function startArchitectFromDesignDoc(options = {}) {
         effort,
         `Read and execute the MultiAgent planning prompt at ${relativePromptPath}.`,
       ],
-      {
-        cwd: projectRoot,
-        env: await buildProviderEnvAsync(
-          providerProfile,
-          options.env || process.env,
-          options.providerProfileOptions || {},
-        ),
-        timeoutMs: 120000,
-      },
-    );
-    state.claudeSessionId = parseClaudeSessionId(`${result.stdout}\n${result.stderr}`);
+      env: await buildProviderEnvAsync(
+        providerProfile,
+        options.env || process.env,
+        options.providerProfileOptions || {},
+      ),
+    });
+    state.claudeSessionId = launch.sessionId;
     state.status = 'running';
-    state.error = state.claudeSessionId
+    state.error = launch.sessionId
       ? null
-      : 'Claude started, but no session id was found in output.';
+      : `Claude started, but its session id could not be resolved (${launch.lookupError}).`;
   } catch (error) {
     state.status = 'failed';
     state.error = `${error.message}${error.stderr ? `\n${error.stderr}` : ''}`;

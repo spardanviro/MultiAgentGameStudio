@@ -230,8 +230,8 @@ test('loadLatestPlanningState returns newest planning state', async () => {
 test('loadPlanningState surfaces blocked Claude background job needs', async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'planning-blocked-'));
   const fakeHome = await fs.mkdtemp(path.join(os.tmpdir(), 'planning-home-'));
-  const previousUserProfile = process.env.USERPROFILE;
-  process.env.USERPROFILE = fakeHome;
+  const previousConfigDir = process.env.CLAUDE_CONFIG_DIR;
+  process.env.CLAUDE_CONFIG_DIR = path.join(fakeHome, '.claude');
 
   try {
     const statePath = getPlanningStatePath(root, 'run-blocked');
@@ -274,10 +274,10 @@ test('loadPlanningState surfaces blocked Claude background job needs', async () 
     assert.equal(state.status, 'blocked');
     assert.equal(state.error, 'login required - run /login');
   } finally {
-    if (previousUserProfile === undefined) {
-      delete process.env.USERPROFILE;
+    if (previousConfigDir === undefined) {
+      delete process.env.CLAUDE_CONFIG_DIR;
     } else {
-      process.env.USERPROFILE = previousUserProfile;
+      process.env.CLAUDE_CONFIG_DIR = previousConfigDir;
     }
   }
 });

@@ -3,6 +3,13 @@ const path = require('node:path');
 const { execFile } = require('node:child_process');
 const yaml = require('js-yaml');
 const { buildClaudeInvocation } = require('./claudeCli');
+const {
+  classifyAgentLifecycle,
+  findAgent,
+  launchBackgroundAgent,
+  listClaudeAgents,
+  readJobState,
+} = require('./claudeAgents');
 const { logEvent } = require('./managerLogger');
 const { DEFAULT_PROVIDER_ID, buildProviderEnvAsync, getProviderProfile } = require('./providerProfiles');
 const diagnostics = require('./diagnostics');
@@ -710,20 +717,6 @@ function classifyBlockedClaudeState(claudeAgent, jobState) {
   return 'blocked_dialog';
 }
 
-async function readClaudeJobState(sessionId) {
-  if (!sessionId) {
-    return null;
-  }
-  const jobStatePath = path.join(
-    process.env.USERPROFILE || process.env.HOME || '',
-    '.claude',
-    'jobs',
-    sessionId,
-    'state.json',
-  );
-  return readJsonIfExists(jobStatePath);
-}
-
 async function recoverRun(projectRoot, runId, options = {}) {
   const state = await loadState(projectRoot, runId);
   const recovery = {
@@ -733,10 +726,9 @@ async function recoverRun(projectRoot, runId, options = {}) {
     errors: [],
   };
 
-  let sessionIds = null;
+  let claudeAgents = null;
   try {
-    const claudeAgents = await listClaudeAgents(projectRoot, options);
-    sessionIds = new Set(claudeAgents.map(getAgentIdentifier).filter(Boolean));
+    claudeAgents = await listClaudeAgents(projectRoot, { runner: options.runner || runCommand });
   } catch (error) {
     recovery.errors.push(`Claude session scan failed: ${error.message}`);
   }
@@ -757,9 +749,9 @@ async function recoverRun(projectRoot, runId, options = {}) {
     }
 
     if (['starting', 'running'].includes(agent.status)) {
-      const jobState = await readClaudeJobState(agent.claudeSessionId);
+      const jobState = await readJobState(agent.claudeSessionId);
       const sessionMissing = !agent.claudeSessionId ||
-        (sessionIds !== null && !sessionIds.has(agent.claudeSessionId) && !jobState);
+        (claudeAgents !== null && !findAgent(claudeAgents, agent.claudeSessionId) && !jobState);
       if (sessionMissing) {
         agent.recoveryIssues.push('session_missing');
         recovery.sessionMissing.push(agent.taskId);
@@ -982,33 +974,6 @@ If another file is needed, write an interface change request instead.
 Always write the assigned report file before finishing.`;
 }
 
-function parseClaudeSessionId(output) {
-  const text = String(output || '');
-
-  const backgrounded = text.match(/\bbackgrounded\b[\s\S]*?\b([0-9a-f]{7,12})\b/i);
-  if (backgrounded) {
-    return backgrounded[1];
-  }
-
-  const uuid = text.match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i);
-  if (uuid) {
-    return uuid[0];
-  }
-
-  const attach = text.match(/\bclaude\s+attach\s+([A-Za-z0-9_-]{6,})\b/i);
-  if (attach) {
-    return attach[1];
-  }
-
-  const labeled = text.match(/\b(?:sessionId|session|id)\b\s*[:=]?\s*([A-Za-z0-9_-]{6,})\b/i);
-  if (labeled) {
-    return labeled[1];
-  }
-
-  const shortHex = text.match(/\b[0-9a-f]{7,12}\b/i);
-  return shortHex ? shortHex[0] : null;
-}
-
 async function startTask(projectRoot, runId, taskId, options = {}) {
   const runner = options.runner || runCommand;
   const state = await loadState(projectRoot, runId);
@@ -1032,6 +997,7 @@ async function startTask(projectRoot, runId, taskId, options = {}) {
     agent.status = preflight.errors.some((error) => /not logged in|auth login/i.test(error))
       ? 'blocked_login'
       : 'failed';
+    agent.blockedSource = 'preflight';
     agent.error = preflight.errors.join('\n');
     await saveState(state);
     return toClientRun(state);
@@ -1075,18 +1041,22 @@ async function startTask(projectRoot, runId, taskId, options = {}) {
       task.effort || getDefaultEffortForRole(state.manifest, task.role),
       fullPrompt,
     ];
-    const result = await runner('claude', args, {
+    const launch = await launchBackgroundAgent({
+      runner,
+      args,
       cwd: agent.worktreePath,
       env: providerEnv,
-      timeoutMs: 120000,
+      name: task.owner,
     });
-    const sessionId = parseClaudeSessionId(`${result.stdout}\n${result.stderr}`);
 
-    agent.claudeSessionId = sessionId;
+    agent.claudeSessionId = launch.sessionId;
+    agent.blockedSource = null;
     agent.status = 'running';
     agent.startedAt = nowIso();
     agent.lastSyncAt = nowIso();
-    agent.error = sessionId ? null : 'Claude started, but no session id was found in output.';
+    agent.error = launch.sessionId
+      ? null
+      : `Claude started, but its session id could not be resolved (${launch.lookupError}). Launch output: ${summarizeText(launch.output, 400)}`;
   } catch (error) {
     agent.status = 'failed';
     agent.error = `${error.message}${error.stderr ? `\n${error.stderr}` : ''}`;
@@ -1451,38 +1421,6 @@ function dependenciesSatisfied(state, taskId) {
   return task.dependsOn.every((dependencyId) => state.agents[dependencyId]?.status === 'patch_applied');
 }
 
-function getAgentIdentifier(agentInfo) {
-  return (
-    agentInfo.id ||
-    agentInfo.sessionId ||
-    agentInfo.session_id ||
-    agentInfo.agentId ||
-    agentInfo.agent_id ||
-    agentInfo.uuid ||
-    null
-  );
-}
-
-function isCompletedClaudeStatus(agentInfo) {
-  const status = String(agentInfo.status || agentInfo.state || '').toLowerCase();
-  return ['done', 'complete', 'completed', 'stopped', 'exited', 'finished', 'idle'].includes(status);
-}
-
-function isBlockedClaudeStatus(agentInfo) {
-  const status = String(agentInfo?.state || agentInfo?.status || '').toLowerCase();
-  return status === 'blocked' || Boolean(agentInfo?.waitingFor);
-}
-
-async function listClaudeAgents(projectRoot, options = {}) {
-  const runner = options.runner || runCommand;
-  const result = await runner('claude', ['agents', '--json', '--all', '--cwd', projectRoot], {
-    cwd: projectRoot,
-    timeoutMs: 120000,
-  });
-  const parsed = JSON.parse(result.stdout || '[]');
-  return Array.isArray(parsed) ? parsed : parsed.agents || [];
-}
-
 async function getChangedFiles(worktreePath, baseCommit, options = {}) {
   const runner = options.runner || runCommand;
   const diff = await runner('git', ['diff', '--name-only', baseCommit], { cwd: worktreePath });
@@ -1555,41 +1493,54 @@ async function auditTask(projectRoot, runId, taskId, options = {}) {
   return toClientRun(state);
 }
 
+// Agents that sync should re-check: running ones, plus ones a previous sync
+// marked blocked (they resume on their own once a rate limit resets, etc.).
+function shouldSyncAgent(agent) {
+  if (!agent.claudeSessionId) {
+    return false;
+  }
+  return agent.status === 'running' || (BLOCKING_STATUSES.has(agent.status) && agent.blockedSource === 'session');
+}
+
+async function syncAgentFromClaude(state, agent, claudeAgents, options = {}) {
+  const record = findAgent(claudeAgents, agent.claudeSessionId);
+  const jobState = await readJobState(agent.claudeSessionId);
+  const lifecycle = classifyAgentLifecycle(record, jobState);
+  agent.lastSyncAt = nowIso();
+  if (record?.sessionId) {
+    agent.claudeFullSessionId = record.sessionId;
+  }
+
+  if (lifecycle.phase === 'blocked') {
+    agent.status = classifyBlockedClaudeState(record, jobState);
+    agent.blockedSource = 'session';
+    agent.error = lifecycle.detail;
+  } else if (lifecycle.phase === 'failed') {
+    agent.status = 'failed';
+    agent.blockedSource = null;
+    agent.error = lifecycle.detail;
+  } else if (lifecycle.phase === 'done') {
+    agent.status = 'done';
+    agent.blockedSource = null;
+    agent.finishedAt = agent.finishedAt || nowIso();
+    await auditAgentInState(state, agent.taskId, options);
+  } else if (lifecycle.phase === 'running' && agent.status !== 'running') {
+    agent.status = 'running';
+    agent.blockedSource = null;
+    agent.error = null;
+  }
+}
+
 async function syncRun(projectRoot, runId, options = {}) {
   const state = await loadState(projectRoot, runId);
 
   try {
-    const claudeAgents = await listClaudeAgents(projectRoot, options);
-    const byId = new Map();
-    for (const claudeAgent of claudeAgents) {
-      const id = getAgentIdentifier(claudeAgent);
-      if (id) {
-        byId.set(id, claudeAgent);
-      }
-    }
-
+    const claudeAgents = await listClaudeAgents(projectRoot, { runner: options.runner || runCommand });
     for (const agent of Object.values(state.agents)) {
-      if (agent.status !== 'running' || !agent.claudeSessionId) {
-        continue;
-      }
-
-      const claudeAgent = byId.get(agent.claudeSessionId);
-      const jobState = await readClaudeJobState(agent.claudeSessionId);
-      agent.lastSyncAt = nowIso();
-      if (isBlockedClaudeStatus(claudeAgent) || jobState?.state === 'blocked' || jobState?.needs) {
-        agent.status = classifyBlockedClaudeState(claudeAgent, jobState);
-        agent.error =
-          jobState?.needs ||
-          jobState?.detail ||
-          claudeAgent?.waitingFor ||
-          'Claude background session is blocked.';
-      } else if (claudeAgent && isCompletedClaudeStatus(claudeAgent)) {
-        agent.status = 'done';
-        agent.finishedAt = agent.finishedAt || nowIso();
-        await auditAgentInState(state, agent.taskId, options);
+      if (shouldSyncAgent(agent)) {
+        await syncAgentFromClaude(state, agent, claudeAgents, options);
       }
     }
-
     state.lastSyncError = null;
   } catch (error) {
     state.lastSyncError = error.message;
@@ -1789,7 +1740,6 @@ module.exports = {
   loadRun,
   loadState,
   normalizeRelPath,
-  parseClaudeSessionId,
   preflightRun,
   readAgentArtifacts,
   recoverRun,

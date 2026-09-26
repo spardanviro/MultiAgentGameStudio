@@ -9,3 +9,8 @@ const { APP_DATA_DIR_ENV } = require('../src/appPaths');
 if (!process.env[APP_DATA_DIR_ENV]) {
   process.env[APP_DATA_DIR_ENV] = fs.mkdtempSync(path.join(os.tmpdir(), 'multiagent-app-data-'));
 }
+
+// Never read the developer's real ~/.claude/jobs from tests.
+if (!process.env.CLAUDE_CONFIG_DIR) {
+  process.env.CLAUDE_CONFIG_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'multiagent-claude-config-'));
+}

@@ -18,10 +18,10 @@ const {
   initializeRun,
   loadLatestRun,
   loadState,
-  parseClaudeSessionId,
   recoverRun,
   startAllReady,
   startTask,
+  syncRun,
   validateManifest,
 } = require('../src/multiAgent');
 
@@ -312,21 +312,6 @@ test('buildAgentPrompt constrains integration agents to contracts instead of imp
   assert.match(prompt, /folder-level module clusters and integration seams/);
   assert.match(prompt, /Integrate through docs\/module_contracts\.md/);
   assert.match(prompt, /public APIs, signals, events, data contracts/);
-});
-
-test('parseClaudeSessionId reads Claude background job ids without dropping the first character', () => {
-  assert.equal(
-    parseClaudeSessionId('backgrounded - b3f4fff3 - main-architect\n'),
-    'b3f4fff3',
-  );
-  assert.equal(
-    parseClaudeSessionId('Started background session 7c5dcf5d\n'),
-    '7c5dcf5d',
-  );
-  assert.equal(
-    parseClaudeSessionId('Run claude attach b3f4fff3 to reconnect.\n'),
-    'b3f4fff3',
-  );
 });
 
 test('startTask creates running state with a fake Claude CLI', async () => {
@@ -840,4 +825,83 @@ test('applyPatch applies a ready patch to the main project', async () => {
   assert.equal(agent.status, 'patch_applied');
   assert.match(source, /var hp = 100/);
   assert.match(savedState, /patch_applied/);
+});
+
+async function setupSyncScenario(agentPatch, agentsJson) {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'multiagent-sync-'));
+  const runner = async (command, args) => {
+    if (command === 'git' && args[0] === 'rev-parse' && args[1] === '--is-inside-work-tree') {
+      return { stdout: 'true\n', stderr: '' };
+    }
+    if (command === 'git' && args[0] === 'rev-parse') {
+      return { stdout: 'abc123\n', stderr: '' };
+    }
+    if (command === 'claude' && args[0] === 'agents') {
+      return { stdout: JSON.stringify(agentsJson), stderr: '' };
+    }
+    return { stdout: '', stderr: '' };
+  };
+  const manifest = validateManifest(makeManifest(root), path.join(root, 'tasks', 'task_manifest.yaml'));
+  await initializeRun(manifest, { runner });
+  const state = await loadState(root, 'run-001');
+  Object.assign(state.agents['player-health'], agentPatch);
+  await fs.writeFile(getStatePath(root, 'run-001'), JSON.stringify(state, null, 2), 'utf8');
+  return { root, runner };
+}
+
+test('syncRun keeps an agent blocked when CLI reports idle status but blocked state', async () => {
+  const { root, runner } = await setupSyncScenario({ status: 'running', claudeSessionId: '26386b61' }, [
+    { id: '26386b61', sessionId: '26386b61-31b4-4104-8a58-48b2e9c2b35d', status: 'idle', state: 'blocked', waitingFor: 'login required' },
+  ]);
+
+  const run = await syncRun(root, 'run-001', { runner });
+  const agent = run.agents.find((entry) => entry.taskId === 'player-health');
+
+  assert.equal(agent.status, 'blocked_login');
+  assert.equal(agent.blockedSource, 'session');
+  assert.equal(agent.claudeFullSessionId, '26386b61-31b4-4104-8a58-48b2e9c2b35d');
+});
+
+test('syncRun matches a stored full session uuid against the short agent id and audits when done', async () => {
+  const { root, runner } = await setupSyncScenario(
+    { status: 'running', claudeSessionId: '26386b61-31b4-4104-8a58-48b2e9c2b35d' },
+    [{ id: '26386b61', state: 'done' }],
+  );
+
+  const run = await syncRun(root, 'run-001', { runner });
+  const agent = run.agents.find((entry) => entry.taskId === 'player-health');
+
+  assert.equal(agent.status, 'patch_ready');
+  assert.ok(agent.finishedAt);
+});
+
+test('syncRun resumes a session-blocked agent once the CLI reports it working again', async () => {
+  const { root, runner } = await setupSyncScenario(
+    { status: 'blocked_rate_limit', blockedSource: 'session', claudeSessionId: '26386b61', error: 'rate limited' },
+    [{ id: '26386b61', state: 'working' }],
+  );
+
+  const run = await syncRun(root, 'run-001', { runner });
+  const agent = run.agents.find((entry) => entry.taskId === 'player-health');
+
+  assert.equal(agent.status, 'running');
+  assert.equal(agent.error, null);
+});
+
+test('syncRun leaves preflight-blocked agents alone', async () => {
+  const { root, runner } = await setupSyncScenario(
+    { status: 'blocked_login', blockedSource: 'preflight', claudeSessionId: '26386b61' },
+    [{ id: '26386b61', state: 'working' }],
+  );
+
+  const run = await syncRun(root, 'run-001', { runner });
+  assert.equal(run.agents.find((entry) => entry.taskId === 'player-health').status, 'blocked_login');
+});
+
+test('syncRun surfaces unexpected agents output as lastSyncError', async () => {
+  const { root } = await setupSyncScenario({ status: 'running', claudeSessionId: '26386b61' }, []);
+  const runner = async () => ({ stdout: 'Usage: claude agents [options]', stderr: '' });
+
+  const run = await syncRun(root, 'run-001', { runner });
+  assert.match(run.lastSyncError, /not JSON/);
 });

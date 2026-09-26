@@ -17,6 +17,7 @@ const state = {
   watchTimer: null,
   autoAdvance: false,
   autoApplyPatches: false,
+  autoDispatchRework: false,
   autoAdvanceTimer: null,
   terminalId: null,
 };
@@ -43,6 +44,7 @@ const elements = {
   advanceWorkflowButton: document.querySelector('#advanceWorkflowButton'),
   autoAdvanceButton: document.querySelector('#autoAdvanceButton'),
   autoApplyButton: document.querySelector('#autoApplyButton'),
+  autoDispatchReworkButton: document.querySelector('#autoDispatchReworkButton'),
   cleanButton: document.querySelector('#cleanButton'),
   projectName: document.querySelector('#projectName'),
   projectPath: document.querySelector('#projectPath'),
@@ -118,6 +120,42 @@ const statusLabels = {
   rejected: 'Rejected',
   session_missing: 'Session Missing',
   worktree_missing: 'Worktree Missing',
+};
+
+// Auto advance keeps polling only while the workflow is progressing on its own.
+const AUTO_ADVANCE_CONTINUE_REASONS = new Set([
+  'agents_started',
+  'waiting_for_agents',
+  'rework_dispatched',
+  'rework_in_progress',
+]);
+
+// Mirrors HOLDING_REWORK_STATUSES in src/reworkGate.js.
+const REWORK_HOLDING_STATUSES = new Set([
+  'starting',
+  'running',
+  'blocked',
+  'manifest_ready',
+  'needs_user_decision',
+  'imported',
+]);
+
+const gateOutcomeLabels = {
+  passed: 'Passed',
+  rework_required: 'Rework Required',
+  report_missing: 'Report Missing',
+  unparsed: 'No rework_items Block',
+};
+
+const reworkStatusLabels = {
+  starting: 'Starting',
+  running: 'Architect Working',
+  blocked: 'Architect Blocked',
+  failed: 'Failed',
+  manifest_ready: 'Manifest Ready',
+  needs_user_decision: 'Needs Your Decision',
+  finished_without_manifest: 'Finished Without Manifest',
+  imported: 'Imported',
 };
 
 const roleLabels = {
@@ -616,6 +654,10 @@ function renderChrome() {
   elements.advanceWorkflowButton.disabled = state.busy || !state.run;
   elements.autoAdvanceButton.disabled = state.busy || !state.run;
   elements.autoApplyButton.disabled = state.busy || !state.run;
+  elements.autoDispatchReworkButton.disabled = state.busy || !state.run;
+  elements.autoDispatchReworkButton.textContent = state.autoDispatchRework
+    ? 'Auto Dispatch Rework On'
+    : 'Auto Dispatch Rework Off';
   elements.autoAdvanceButton.textContent = state.autoAdvance ? 'Auto Advance On' : 'Auto Advance Off';
   elements.autoApplyButton.textContent = state.autoApplyPatches
     ? 'Auto Apply Patches On'
@@ -1036,14 +1078,146 @@ function renderMainInspector() {
           : ''
       }
     </section>
-    <section class="detail-section">
-      <h4>Workflow</h4>
-      <p class="muted-text">Main agent plans and dispatches. Module review, integration, and system review are separate background agents.</p>
-    </section>
+    ${renderReworkSection()}
   `;
   for (const button of elements.inspectorBody.querySelectorAll('[data-main-action]')) {
     button.addEventListener('click', () => startPlanningTerminal(button.dataset.mainAction));
   }
+  bindReworkActions();
+}
+
+function getReworkView() {
+  const workflow = state.run?.workflow || {};
+  const gates = Object.values(workflow.reviewGates || {});
+  const diagnostics = workflow.diagnostics || {};
+  const failedDiagnostics = ['afterModules', 'afterIntegration'].filter((stage) => diagnostics[stage] === 'failed');
+  const rework = workflow.rework || null;
+  const hasTrigger = gates.some((gate) => gate.outcome !== 'passed' && !gate.waived) || failedDiagnostics.length > 0;
+  return {
+    gates,
+    failedDiagnostics,
+    rework,
+    canDispatch: hasTrigger && !(rework && REWORK_HOLDING_STATUSES.has(rework.status)),
+  };
+}
+
+function renderGateCard(gate) {
+  const open = gate.outcome === 'passed' || gate.waived;
+  const tone = gate.waived ? 'waived' : open ? 'open' : 'closed';
+  const label = gate.waived ? 'Waived' : gateOutcomeLabels[gate.outcome] || gate.outcome;
+  const items = (gate.blockingItems || [])
+    .map((item) => `<li>${escapeHtml(item.issue_id || '-')}: ${escapeHtml(item.problem || '-')}</li>`)
+    .join('');
+  return `
+    <div class="gate-card ${tone}">
+      <div class="gate-card-head">
+        <strong>${escapeHtml(gate.taskId)}</strong>
+        <span>${escapeHtml(label)}</span>
+      </div>
+      <p class="muted-text">${escapeHtml(gate.reportPath || '-')} · ${gate.items?.length || 0} item(s), ${gate.blockingItems?.length || 0} blocking</p>
+      ${gate.error && !open ? `<p class="muted-text">${escapeHtml(gate.error)}</p>` : ''}
+      ${items ? `<ul class="file-list">${items}</ul>` : ''}
+      ${open ? '' : `<div class="button-row"><button class="ghost-button compact" data-waive-gate="${escapeHtml(gate.taskId)}">Waive Gate</button></div>`}
+    </div>
+  `;
+}
+
+function renderReworkRound(rework) {
+  if (!rework) {
+    return '';
+  }
+  const buttons = [];
+  if (rework.status === 'manifest_ready') {
+    buttons.push('<button class="primary-button compact" data-rework-action="import">Import Rework Manifest</button>');
+  }
+  if (rework.claudeSessionId) {
+    buttons.push('<button class="ghost-button compact" data-rework-action="attach">Attach</button>');
+    buttons.push('<button class="ghost-button compact" data-rework-action="logs">Logs</button>');
+  }
+  return `
+    <dl class="kv-list">
+      <dt>Round</dt><dd>${escapeHtml(rework.round)} → ${escapeHtml(rework.nextRunId)}</dd>
+      <dt>Status</dt><dd>${escapeHtml(reworkStatusLabels[rework.status] || rework.status)}</dd>
+      <dt>Session</dt><dd>${escapeHtml(rework.claudeSessionId || '-')}</dd>
+      <dt>Manifest</dt><dd>${escapeHtml(rework.manifestPath)}</dd>
+      <dt>Decisions</dt><dd>${escapeHtml(rework.decisionsPath)}</dd>
+      <dt>Questions</dt><dd>${escapeHtml(rework.userQuestionsPath)}</dd>
+      ${rework.importedRunId ? `<dt>Imported</dt><dd>${escapeHtml(rework.importedRunId)}</dd>` : ''}
+    </dl>
+    ${rework.error ? `<pre class="code-preview">${escapeHtml(rework.error)}</pre>` : ''}
+    ${buttons.length ? `<div class="button-row">${buttons.join('')}</div>` : ''}
+  `;
+}
+
+function renderReworkSection() {
+  const view = getReworkView();
+  const reworkOf = state.run.reworkOf;
+  const lineage = reworkOf
+    ? `<p class="muted-text">Rework round ${escapeHtml(reworkOf.round)} of ${escapeHtml(reworkOf.parentRunId)} · decisions in ${escapeHtml(reworkOf.decisionsPath)}</p>`
+    : '';
+  const diagnostics = view.failedDiagnostics
+    .map(
+      (stage) => `
+        <div class="gate-card closed">
+          <div class="gate-card-head"><strong>diagnostics ${escapeHtml(stage)}</strong><span>Failed</span></div>
+          <div class="button-row"><button class="ghost-button compact" data-waive-gate="diagnostics:${escapeHtml(stage)}">Waive Diagnostics</button></div>
+        </div>`,
+    )
+    .join('');
+  const empty = !view.gates.length && !view.failedDiagnostics.length && !view.rework;
+  return `
+    <section class="detail-section">
+      <h4>Rework Loop</h4>
+      ${lineage}
+      ${empty ? '<p class="muted-text">Review gates appear here once a review patch is applied. Blocking rework_items stop the pipeline until the Main Architect dispatches rework or you waive the gate.</p>' : ''}
+      ${view.gates.map(renderGateCard).join('')}
+      ${diagnostics}
+      ${renderReworkRound(view.rework)}
+      ${view.canDispatch ? '<div class="button-row"><button class="primary-button compact" data-rework-action="dispatch">Dispatch Rework to Main Architect</button></div>' : ''}
+    </section>
+  `;
+}
+
+function bindReworkActions() {
+  for (const button of elements.inspectorBody.querySelectorAll('[data-waive-gate]')) {
+    button.addEventListener('click', () => waiveGate(button.dataset.waiveGate));
+  }
+  for (const button of elements.inspectorBody.querySelectorAll('[data-rework-action]')) {
+    const action = button.dataset.reworkAction;
+    if (action === 'dispatch') {
+      button.addEventListener('click', dispatchRework);
+    } else if (action === 'import') {
+      button.addEventListener('click', importReworkManifest);
+    } else {
+      button.addEventListener('click', () => startReworkTerminal(action));
+    }
+  }
+}
+
+async function dispatchRework() {
+  if (!state.run) return;
+  await runAction(
+    () => api.multiAgent.dispatchRework(state.run.projectRoot, state.run.runId),
+    'Rework dispatched to the Main Architect',
+  );
+}
+
+async function importReworkManifest() {
+  if (!state.run) return;
+  await runAction(
+    () => api.multiAgent.importReworkManifest(state.run.projectRoot, state.run.runId),
+    'Rework manifest imported as a new run',
+  );
+}
+
+async function waiveGate(gateId) {
+  if (!state.run) return;
+  const confirmed = window.confirm(`Waive ${gateId}? The pipeline will continue even though the check did not pass.`);
+  if (!confirmed) return;
+  await runAction(
+    () => api.multiAgent.waiveGate(state.run.projectRoot, state.run.runId, gateId, 'waived from UI'),
+    `${gateId} waived`,
+  );
 }
 
 function renderAgentButtons(agent) {
@@ -1437,6 +1611,7 @@ async function advanceWorkflow({ fromAuto = false } = {}) {
   try {
     const result = await api.multiAgent.advanceWorkflow(state.run.projectRoot, state.run.runId, {
       autoApplyPatches: state.autoApplyPatches,
+      autoDispatchRework: state.autoDispatchRework,
     });
     setRun(result.run);
     if (result.diagnostics) {
@@ -1444,12 +1619,7 @@ async function advanceWorkflow({ fromAuto = false } = {}) {
       state.selectedNodeId = 'diagnostics';
     }
     setStatus(result.reason || 'Workflow checked');
-    if (
-      fromAuto &&
-      ['patch_approval_required', 'patch_apply_failed', 'diagnostics_failed', 'blocked_agent', 'idle_or_waiting'].includes(
-        result.stopReason,
-      )
-    ) {
+    if (fromAuto && !AUTO_ADVANCE_CONTINUE_REASONS.has(result.stopReason)) {
       setAutoAdvance(false, result.reason);
     }
     return result;
@@ -1486,6 +1656,12 @@ function setAutoAdvance(enabled, statusText) {
 
 function toggleAutoAdvance() {
   setAutoAdvance(!state.autoAdvance);
+}
+
+function toggleAutoDispatchRework() {
+  state.autoDispatchRework = !state.autoDispatchRework;
+  setStatus(state.autoDispatchRework ? 'Auto rework dispatch enabled' : 'Auto rework dispatch disabled');
+  renderChrome();
 }
 
 function toggleAutoApplyPatches() {
@@ -1555,6 +1731,22 @@ async function startPlanningTerminal(mode) {
   elements.stopTerminalButton.disabled = false;
 }
 
+async function startReworkTerminal(mode) {
+  const rework = state.run?.workflow?.rework;
+  if (!rework?.claudeSessionId) return;
+  elements.terminalDrawer.classList.remove('collapsed');
+  elements.terminalOutput.textContent = '';
+  elements.terminalTitle.textContent = `${state.run.manifest.mainAgent.name} rework ${rework.round} / ${mode}`;
+  const result = await api.terminal.start({
+    mode,
+    sessionId: rework.claudeSessionId,
+    cwd: state.run.projectRoot,
+  });
+  state.terminalId = result.terminalId;
+  elements.sendTerminalButton.disabled = false;
+  elements.stopTerminalButton.disabled = false;
+}
+
 async function sendTerminalInput() {
   if (!state.terminalId || !elements.terminalInput.value) return;
   await api.terminal.input(state.terminalId, `${elements.terminalInput.value}\n`);
@@ -1607,6 +1799,7 @@ elements.diagnosticsButton.addEventListener('click', captureDiagnostics);
 elements.advanceWorkflowButton.addEventListener('click', () => advanceWorkflow());
 elements.autoAdvanceButton.addEventListener('click', toggleAutoAdvance);
 elements.autoApplyButton.addEventListener('click', toggleAutoApplyPatches);
+elements.autoDispatchReworkButton.addEventListener('click', toggleAutoDispatchRework);
 elements.startAllButton.addEventListener('click', startAllReady);
 elements.startModuleReviewButton.addEventListener('click', startModuleReview);
 elements.cleanButton.addEventListener('click', cleanAcceptedWorktrees);

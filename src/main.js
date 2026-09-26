@@ -16,6 +16,7 @@ const multiAgent = require('./multiAgent');
 const modelOptions = require('./modelOptions');
 const planning = require('./planning');
 const providerProfiles = require('./providerProfiles');
+const reworkDispatch = require('./reworkDispatch');
 
 let mainWindow;
 let nextTerminalId = 1;
@@ -450,7 +451,7 @@ function registerMultiAgentHandlers() {
 
   ipcMain.handle('multiagent:advanceWorkflow', async (_event, projectRoot, runId, options = {}) => {
     await logEvent('multiagent.advanceWorkflow.start', { projectRoot, runId, options }, { projectRoot });
-    const result = await multiAgent.advanceWorkflow(projectRoot, runId, options);
+    const result = await reworkDispatch.advanceWorkflowWithRework(projectRoot, runId, options);
     await logEvent('multiagent.advanceWorkflow.result', {
       projectRoot,
       runId,
@@ -459,6 +460,34 @@ function registerMultiAgentHandlers() {
       stopReason: result?.stopReason,
       events: result?.events,
     }, { projectRoot, level: result?.advanced ? 'info' : 'warn' });
+    return rememberRunResult(result);
+  });
+
+  ipcMain.handle('multiagent:dispatchRework', async (_event, projectRoot, runId) => {
+    await logEvent('multiagent.dispatchRework.start', { projectRoot, runId }, { projectRoot });
+    const result = await reworkDispatch.startArchitectRework(projectRoot, runId);
+    const rework = result?.workflow?.rework;
+    await logEvent('multiagent.dispatchRework.result', { projectRoot, runId, rework }, {
+      projectRoot,
+      level: rework?.status === 'running' ? 'info' : 'error',
+    });
+    return rememberRunResult(result);
+  });
+
+  ipcMain.handle('multiagent:importReworkManifest', async (_event, projectRoot, runId) => {
+    await logEvent('multiagent.importReworkManifest.start', { projectRoot, runId }, { projectRoot });
+    const result = await reworkDispatch.importReworkManifest(projectRoot, runId);
+    await logEvent('multiagent.importReworkManifest.result', {
+      projectRoot,
+      runId,
+      importedRunId: result?.runId,
+    }, { projectRoot });
+    return rememberRunResult(result);
+  });
+
+  ipcMain.handle('multiagent:waiveGate', async (_event, projectRoot, runId, gateId, note) => {
+    const result = await multiAgent.waiveWorkflowGate(projectRoot, runId, gateId, note);
+    await logEvent('multiagent.waiveGate', { projectRoot, runId, gateId, note }, { projectRoot, level: 'warn' });
     return rememberRunResult(result);
   });
 

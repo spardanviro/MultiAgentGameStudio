@@ -13,6 +13,14 @@ const {
 const { logEvent } = require('./managerLogger');
 const { DEFAULT_PROVIDER_ID, buildProviderEnvAsync, getProviderProfile } = require('./providerProfiles');
 const diagnostics = require('./diagnostics');
+const {
+  getFailingReviewGates,
+  isReviewGateOpenForTask,
+  isReworkHoldingRun,
+  refreshReviewGates,
+  syncReworkArchitect,
+  waiveGate,
+} = require('./reworkGate');
 
 const STATE_VERSION = 1;
 const VALID_STATUSES = new Set([
@@ -513,6 +521,8 @@ function validateManifest(rawManifest, manifestPath) {
       sessionName: String(rawManifest.main_agent?.session_name || ''),
       role: rawManifest.main_agent?.role || 'main',
       model: String(rawManifest.main_agent?.model || 'opus'),
+      provider: String(rawManifest.main_agent?.provider || DEFAULT_PROVIDER_ID),
+      effort: String(rawManifest.main_agent?.effort || rawManifest.defaults?.effort || 'medium'),
     },
     defaults: {
       subAgentModel: String(rawManifest.defaults?.sub_agent_model || 'sonnet'),
@@ -984,9 +994,16 @@ async function startTask(projectRoot, runId, taskId, options = {}) {
     return toClientRun(state);
   }
 
+  await refreshReviewGates(state);
   if (!dependenciesSatisfied(state, taskId)) {
+    const closedGates = task.dependsOn.filter(
+      (dependencyId) =>
+        state.agents[dependencyId]?.status === 'patch_applied' && !isReviewGateOpenForTask(state, dependencyId),
+    );
     agent.status = 'queued';
-    agent.error = `Waiting for dependencies to reach patch_applied: ${task.dependsOn.join(', ')}`;
+    agent.error = closedGates.length
+      ? `Blocked by review gate(s) ${closedGates.join(', ')}: dispatch rework to the Main Architect or waive the gate.`
+      : `Waiting for dependencies to reach patch_applied: ${task.dependsOn.join(', ')}`;
     await saveState(state);
     return toClientRun(state);
   }
@@ -1071,6 +1088,9 @@ async function startAllReady(projectRoot, runId, options = {}) {
   const preflight = await preflightRun(projectRoot, runId, options);
   if (!preflight.ok) {
     return toClientRun(await loadState(projectRoot, runId));
+  }
+  if (await refreshReviewGates(state)) {
+    await saveState(state);
   }
 
   const maxParallel = Math.max(1, Number(options.maxParallelAgents || state.manifest.defaults.maxParallelAgents || 5));
@@ -1253,6 +1273,10 @@ function getAgentsByRole(state, role) {
   return Object.values(state.agents).filter((agent) => agent.role === role);
 }
 
+function isDiagnosticsStageCleared(stageStatus) {
+  return stageStatus === 'passed' || stageStatus === 'waived';
+}
+
 function shouldRunDiagnosticsBeforeRole(state, role) {
   const diagnosticsState = state.workflow?.diagnostics || {};
   if (role === 'module_review') {
@@ -1260,7 +1284,7 @@ function shouldRunDiagnosticsBeforeRole(state, role) {
     return (
       moduleAgents.length > 0 &&
       moduleAgents.every((agent) => agent.status === 'patch_applied') &&
-      diagnosticsState.afterModules !== 'passed'
+      !isDiagnosticsStageCleared(diagnosticsState.afterModules)
     );
   }
   if (role === 'system_review') {
@@ -1268,7 +1292,7 @@ function shouldRunDiagnosticsBeforeRole(state, role) {
     return (
       integrationAgents.length > 0 &&
       integrationAgents.every((agent) => agent.status === 'patch_applied') &&
-      diagnosticsState.afterIntegration !== 'passed'
+      !isDiagnosticsStageCleared(diagnosticsState.afterIntegration)
     );
   }
   return false;
@@ -1303,6 +1327,16 @@ async function advanceWorkflow(projectRoot, runId, options = {}) {
       advanced: false,
       reason: `${blockingAgent.taskId} is blocked: ${blockingAgent.status}`,
       stopReason: 'blocked_agent',
+      events,
+      run,
+    };
+  }
+
+  if (isReworkHoldingRun(state)) {
+    return {
+      advanced: false,
+      reason: `Rework round ${state.workflow.rework.round} is ${state.workflow.rework.status}.`,
+      stopReason: 'rework_open',
       events,
       run,
     };
@@ -1390,6 +1424,21 @@ async function advanceWorkflow(projectRoot, runId, options = {}) {
     run = toClientRun(state);
   }
 
+  if (await refreshReviewGates(state)) {
+    await saveState(state);
+  }
+  const failingGates = getFailingReviewGates(state);
+  if (failingGates.length) {
+    return {
+      advanced: false,
+      reason: `Review gate closed (${failingGates.map((gate) => `${gate.taskId}: ${gate.outcome}`).join(', ')}). Dispatch rework to the Main Architect or waive the gate.`,
+      stopReason: 'rework_required',
+      events,
+      reviewGates: failingGates,
+      run: toClientRun(state),
+    };
+  }
+
   const readyIds = Object.values(state.agents)
     .filter((agent) => ['ready', 'queued'].includes(agent.status))
     .filter((agent) => dependenciesSatisfied(state, agent.taskId))
@@ -1407,18 +1456,54 @@ async function advanceWorkflow(projectRoot, runId, options = {}) {
     };
   }
 
+  return describeIdleWorkflow(state, events);
+}
+
+function describeIdleWorkflow(state, events) {
+  const agents = Object.values(state.agents);
+  const activeCount = agents.filter((agent) => ['starting', 'running', 'auditing'].includes(agent.status)).length;
+  if (activeCount) {
+    return {
+      advanced: false,
+      reason: `Waiting for ${activeCount} running agent(s).`,
+      stopReason: 'waiting_for_agents',
+      events,
+      run: toClientRun(state),
+    };
+  }
+  if (agents.length && agents.every((agent) => agent.status === 'patch_applied')) {
+    return {
+      advanced: false,
+      reason: 'Every agent patch is applied and all review gates are open. This run is complete.',
+      stopReason: 'workflow_complete',
+      events,
+      run: toClientRun(state),
+    };
+  }
   return {
     advanced: false,
     reason: 'No safe automatic workflow step is available.',
     stopReason: 'idle_or_waiting',
     events,
-    run: toClientRun(await loadState(projectRoot, runId)),
+    run: toClientRun(state),
   };
 }
 
+async function waiveWorkflowGate(projectRoot, runId, gateId, note = '') {
+  const state = await loadState(projectRoot, runId);
+  waiveGate(state, String(gateId || ''), String(note || ''));
+  await saveState(state);
+  return toClientRun(state);
+}
+
+// A dependency counts once its patch is applied and, for review agents, once
+// its review gate is open (passed or waived). Call refreshReviewGates first.
 function dependenciesSatisfied(state, taskId) {
   const task = getTask(state, taskId);
-  return task.dependsOn.every((dependencyId) => state.agents[dependencyId]?.status === 'patch_applied');
+  return task.dependsOn.every(
+    (dependencyId) =>
+      state.agents[dependencyId]?.status === 'patch_applied' && isReviewGateOpenForTask(state, dependencyId),
+  );
 }
 
 async function getChangedFiles(worktreePath, baseCommit, options = {}) {
@@ -1541,6 +1626,7 @@ async function syncRun(projectRoot, runId, options = {}) {
         await syncAgentFromClaude(state, agent, claudeAgents, options);
       }
     }
+    await syncReworkArchitect(state, claudeAgents);
     state.lastSyncError = null;
   } catch (error) {
     state.lastSyncError = error.message;
@@ -1707,6 +1793,8 @@ function toClientRun(state) {
     lastSyncError: state.lastSyncError,
     preflight: state.preflight || null,
     recovery: state.recovery || null,
+    workflow: state.workflow || null,
+    reworkOf: state.reworkOf || null,
     counts: agents.reduce(
       (acc, agent) => {
         acc.total += 1;
@@ -1745,8 +1833,10 @@ module.exports = {
   recoverRun,
   rejectPatch,
   runCommand,
+  saveState,
   startAllReady,
   startTask,
   syncRun,
   validateManifest,
+  waiveWorkflowGate,
 };

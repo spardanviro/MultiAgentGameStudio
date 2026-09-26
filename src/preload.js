@@ -51,6 +51,11 @@ contextBridge.exposeInMainWorld('claudeManager', {
       ipcRenderer.invoke('multiagent:advanceModuleReview', projectRoot, runId),
     advanceWorkflow: (projectRoot, runId, options) =>
       ipcRenderer.invoke('multiagent:advanceWorkflow', projectRoot, runId, options),
+    dispatchRework: (projectRoot, runId) => ipcRenderer.invoke('multiagent:dispatchRework', projectRoot, runId),
+    importReworkManifest: (projectRoot, runId) =>
+      ipcRenderer.invoke('multiagent:importReworkManifest', projectRoot, runId),
+    waiveGate: (projectRoot, runId, gateId, note) =>
+      ipcRenderer.invoke('multiagent:waiveGate', projectRoot, runId, gateId, note),
     preflight: (projectRoot, runId) => ipcRenderer.invoke('multiagent:preflight', projectRoot, runId),
     auditTask: (projectRoot, runId, taskId) =>
       ipcRenderer.invoke('multiagent:auditTask', projectRoot, runId, taskId),

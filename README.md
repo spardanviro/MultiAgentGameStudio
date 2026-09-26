@@ -40,9 +40,24 @@ npm start
 6. Review the generated docs, scaffold files, prompts, and manifest.
 7. Start module agents and apply compliant patches.
 8. Run Capture Diagnostics to execute the configured compile command and capture errors/warnings.
-9. Send diagnostics reports back through the Main Architect before module review, integration, or system review.
+9. When a review gate or diagnostics fails, dispatch a rework round to the Main Architect (or waive the gate), review the rework manifest it writes, and import it as the next run.
 
 The Main Architect creates the dispatch package from the supplied spec. It does not convert rough design notes into a spec and does not launch child agents itself.
+
+## Review Gates And Rework Rounds
+
+After a `module_review` or `system_review` patch is applied, the manager parses the `rework_items` YAML block in its report. The gate closes when any item has `blocks_integration` / `blocks_release` set or severity `critical` / `blocker`, when the report is missing, or when it has no `rework_items` block. A closed gate keeps dependent agents from starting, from Advance Workflow and from Start buttons alike.
+
+From the main node's Rework Loop panel you can:
+
+- **Waive** a gate or a failed diagnostics stage to continue anyway.
+- **Dispatch Rework to Main Architect**: the manager writes `.multiagent/runs/<run_id>/rework/<next_run_id>_prompt.md` with the blocking items, diagnostics reports, and interface requests, then starts the architect in the background. The architect writes one of:
+  - `tasks/task_manifest.<run_id>-rework-<n>.yaml` for the next run,
+  - `work/requests/<next_run_id>_user_decisions.md` when it needs your decision,
+  - only `reports/rework/<next_run_id>_decisions.md` when every item is deferred.
+- **Import Rework Manifest** once it is ready; the new run records which run it reworks.
+
+Auto Dispatch Rework dispatches the architect at most once per run when Advance Workflow hits a closed gate or failed diagnostics. Auto Advance keeps polling while agents or the architect are working and stops whenever a decision is needed.
 
 ## Manifest
 
@@ -146,3 +161,4 @@ system_review:
 - The main project is changed only when Apply Patch succeeds.
 - Accepted worktrees are kept by default and can be removed with Clean Accepted Worktrees.
 - The main agent plans, dispatches, and makes decisions. Module review, integration, and system review are separate agents.
+- Machine-local app data (logs, app state, provider profiles) lives in `.multiagent-manager/`; set `MULTIAGENT_MANAGER_HOME` to move it. `npm test` points it at a temp dir.

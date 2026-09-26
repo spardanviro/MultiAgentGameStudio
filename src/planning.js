@@ -459,7 +459,7 @@ For system_review:
 
 For Main Architect re-dispatch:
 
-- When review reports identify issues, create a follow-up manifest such as tasks/task_manifest.rework.yaml or update tasks/task_manifest.yaml only after preserving the previous run context in reports.
+- The manager parses every review report's rework_items block. Blocking items stop the pipeline and the manager starts a separate rework round with its own prompt naming the exact manifest path and run id to write. Do not create rework manifests during this planning task.
 - Rework manifests must keep the same ownership rule: one agent owns one source script, one source script has one owner.
 - If review identifies a missing script, create a new task and scaffold for that script rather than allowing an existing agent to edit outside its owned_script.
 

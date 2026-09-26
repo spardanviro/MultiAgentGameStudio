@@ -39,7 +39,8 @@ test('buildArchitectPrompt treats input as completed spec and includes manifest 
   assert.match(prompt, /review_agent_effort: medium/);
   assert.match(prompt, /integration_agent_effort: medium/);
   assert.match(prompt, /system_review_agent_effort: medium/);
-  assert.match(prompt, /tasks\/task_manifest\.rework\.yaml/);
+  assert.match(prompt, /manager starts a separate rework round/);
+  assert.match(prompt, /Do not create rework manifests during this planning task/);
   assert.match(prompt, /YAML block named rework_items/);
   assert.match(prompt, /integration_context/);
   assert.match(prompt, /docs\/module_layout\.md/);

@@ -750,3 +750,41 @@ h1 {
     left: 278px;
   }
 }
+
+.gate-card {
+  display: grid;
+  gap: 6px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-left: 4px solid var(--muted);
+  border-radius: 8px;
+  background: var(--surface-strong);
+}
+
+.gate-card.closed {
+  border-left-color: var(--rose);
+}
+
+.gate-card.open {
+  border-left-color: var(--green);
+}
+
+.gate-card.waived {
+  border-left-color: var(--amber);
+}
+
+.gate-card-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.gate-card-head span {
+  color: var(--muted);
+}
+
+.gate-card p {
+  margin: 0;
+  font-size: 12px;
+}

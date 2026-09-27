@@ -572,6 +572,18 @@ function registerMultiAgentHandlers() {
     return rememberRunResult(result);
   });
 
+  ipcMain.handle('multiagent:commitWorkingTree', async (_event, projectRoot, runId) => {
+    const result = await multiAgent.commitRunWorkingTree(projectRoot, runId);
+    await logEvent('multiagent.commitWorkingTree.result', {
+      projectRoot,
+      runId,
+      committed: result.committed,
+      commit: result.commit,
+      files: result.files,
+    }, { projectRoot });
+    return rememberRunResult(result);
+  });
+
   ipcMain.handle('multiagent:readArtifacts', async (_event, projectRoot, runId, taskId) => {
     return multiAgent.readAgentArtifacts(projectRoot, runId, taskId);
   });

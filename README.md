@@ -20,7 +20,7 @@ Local Electron control surface for Claude Code background-agent workflows.
 - Inspect each node's prompt, allowed files, reports, diff, and policy violations.
 - Stream an agent's log into the terminal drawer, or continue a stopped session with `claude --resume <session>` in a terminal window.
 - Audit changed files after each agent finishes.
-- Generate a patch for compliant work and apply it to the main project only when Apply Patch is clicked.
+- Generate a patch for compliant work; Apply Patch (or auto-apply) commits it on the run branch `multiagent-runs/<run_id>`.
 - Run terminal-based compile diagnostics and capture errors/warnings into reports for the Main Architect.
 - Configure model and effort separately for main architect, module agents, review agents, integration, and system review.
 
@@ -158,8 +158,10 @@ system_review:
 ## Constraints
 
 - V1 supports git projects only.
-- Worktree base is the current local `HEAD`.
-- The main project is changed only when Apply Patch succeeds.
+- Each run works on its own branch `multiagent-runs/<run_id>`, created from the current `HEAD` when the first agent starts. Rework runs branch from their parent run.
+- Every applied patch is one commit on the run branch (project git hooks still run; if the commit is rejected the patch is reverted). Agent worktrees start from the run branch tip, so later agents see earlier accepted work. Merging the run branch back is up to you.
+- Agents cannot see uncommitted changes, so starting agents requires a clean working tree. Commit Working Tree commits the Main Architect's scaffold, docs and prompts on the run branch.
+- `.multiagent/` is added to `.git/info/exclude` so run data never shows up in `git status`.
 - Accepted worktrees are kept by default and can be removed with Clean Accepted Worktrees.
 - The main agent plans, dispatches, and makes decisions. Module review, integration, and system review are separate agents.
 - Machine-local app data (logs, app state, provider profiles) lives in `.multiagent-manager/`; set `MULTIAGENT_MANAGER_HOME` to move it. `npm test` points it at a temp dir.

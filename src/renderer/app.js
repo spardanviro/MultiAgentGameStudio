@@ -45,6 +45,7 @@ const elements = {
   autoAdvanceButton: document.querySelector('#autoAdvanceButton'),
   autoApplyButton: document.querySelector('#autoApplyButton'),
   autoDispatchReworkButton: document.querySelector('#autoDispatchReworkButton'),
+  commitWorkingTreeButton: document.querySelector('#commitWorkingTreeButton'),
   cleanButton: document.querySelector('#cleanButton'),
   projectName: document.querySelector('#projectName'),
   projectPath: document.querySelector('#projectPath'),
@@ -680,6 +681,7 @@ function renderChrome() {
     ? 'Auto Apply Patches On'
     : 'Auto Apply Patches Off';
   elements.cleanButton.disabled = state.busy || !state.run || appliedCount === 0;
+  elements.commitWorkingTreeButton.disabled = state.busy || !state.run;
   elements.watchManifestButton.textContent = state.watching ? 'Stop Manifest Watch' : 'Start Manifest Watch';
 }
 
@@ -1078,6 +1080,7 @@ function renderMainInspector() {
         <dt>Run ID</dt><dd>${escapeHtml(state.run.runId)}</dd>
         <dt>Goal</dt><dd>${escapeHtml(state.run.manifest.run.goal || '-')}</dd>
         <dt>Base</dt><dd>${escapeHtml(shortHash(state.run.baseCommit))}</dd>
+        <dt>Branch</dt><dd>${escapeHtml(state.run.runBranch || '-')}</dd>
         <dt>Manifest</dt><dd>${escapeHtml(state.run.manifestPath)}</dd>
       </dl>
     </section>
@@ -1710,6 +1713,16 @@ async function startModuleReview() {
   }, null);
 }
 
+// Commits the Main Architect's scaffold, docs and prompts on the run branch so
+// agent worktrees (which start from the last commit) include them.
+async function commitWorkingTree() {
+  if (!state.run) return;
+  await runAction(async () => {
+    const result = await api.multiAgent.commitWorkingTree(state.run.projectRoot, state.run.runId);
+    return result.run;
+  }, 'Working tree committed on the run branch');
+}
+
 async function cleanAcceptedWorktrees() {
   if (!state.run) return;
   await runAction(async () => {
@@ -1839,6 +1852,7 @@ elements.autoDispatchReworkButton.addEventListener('click', toggleAutoDispatchRe
 elements.startAllButton.addEventListener('click', startAllReady);
 elements.startModuleReviewButton.addEventListener('click', startModuleReview);
 elements.cleanButton.addEventListener('click', cleanAcceptedWorktrees);
+elements.commitWorkingTreeButton.addEventListener('click', commitWorkingTree);
 elements.sendTerminalButton.addEventListener('click', sendTerminalInput);
 elements.stopTerminalButton.addEventListener('click', stopTerminal);
 elements.closeTerminalButton.addEventListener('click', closeTerminal);

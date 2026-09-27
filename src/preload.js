@@ -63,6 +63,8 @@ contextBridge.exposeInMainWorld('claudeManager', {
       ipcRenderer.invoke('multiagent:applyPatch', projectRoot, runId, taskId),
     rejectPatch: (projectRoot, runId, taskId) =>
       ipcRenderer.invoke('multiagent:rejectPatch', projectRoot, runId, taskId),
+    commitWorkingTree: (projectRoot, runId) =>
+      ipcRenderer.invoke('multiagent:commitWorkingTree', projectRoot, runId),
     cleanAcceptedWorktrees: (projectRoot, runId) =>
       ipcRenderer.invoke('multiagent:cleanAcceptedWorktrees', projectRoot, runId),
     readArtifacts: (projectRoot, runId, taskId) =>

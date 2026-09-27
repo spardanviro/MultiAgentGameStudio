@@ -679,8 +679,9 @@ test('advanceModuleReviewIfReady starts review only after all module patches are
   assert.equal(result.advanced, true);
   assert.equal(reviewAgent.status, 'running');
   assert.match(reviewAgent.claudeSessionId, /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
-  assert.ok(calls.some((call) => call.command === 'git' && call.args[0] === 'apply'));
-  assert.ok(calls.some((call) => call.command === 'git' && call.args.includes('multiagent: hydrate dependency patches')));
+  // Dependencies are already committed on the run branch; nothing is re-applied.
+  assert.ok(!calls.some((call) => call.command === 'git' && call.args[0] === 'apply'));
+  assert.ok(calls.some((call) => call.command === 'git' && call.args[0] === 'worktree' && call.args.at(-1) === 'HEAD'));
 });
 
 test('advanceWorkflow runs module diagnostics before starting module review', async () => {

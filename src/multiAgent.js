@@ -14,6 +14,14 @@ const { logEvent } = require('./managerLogger');
 const { DEFAULT_PROVIDER_ID, buildProviderEnvAsync, getProviderProfile } = require('./providerProfiles');
 const diagnostics = require('./diagnostics');
 const {
+  applyAndCommitPatch,
+  commitWorkingTree,
+  ensureManagerDirExcluded,
+  ensureRunBranch,
+  getRunBranchName,
+  listUncommittedChanges,
+} = require('./runGit');
+const {
   getFailingReviewGates,
   isReviewGateOpenForTask,
   isReworkHoldingRun,
@@ -677,6 +685,14 @@ async function preflightRun(projectRoot, runId, options = {}) {
   try {
     await ensureGitProject(projectRoot, options);
     await getHeadCommit(projectRoot, options);
+    const uncommitted = await listUncommittedChanges(projectRoot, options.runner || runCommand);
+    if (uncommitted.length) {
+      const shown = uncommitted.slice(0, 8).join(', ');
+      const more = uncommitted.length > 8 ? ` and ${uncommitted.length - 8} more` : '';
+      errors.push(
+        `The project has uncommitted changes (${shown}${more}). Agents start from the last commit and would not see them. Use Commit Working Tree, or commit/stash them yourself.`,
+      );
+    }
   } catch (error) {
     errors.push(`Git baseline is not ready: ${error.message}`);
   }
@@ -807,7 +823,7 @@ function createAgentState(task, manifest, existingAgent) {
     error: existingAgent?.error || null,
     lastSyncAt: existingAgent?.lastSyncAt || null,
     recoveryIssues: existingAgent?.recoveryIssues || [],
-    hydratedPatchPaths: existingAgent?.hydratedPatchPaths || [],
+    appliedCommit: existingAgent?.appliedCommit || null,
     auditBaseCommit: existingAgent?.auditBaseCommit || null,
   };
 }
@@ -853,6 +869,7 @@ function getDefaultEffortForRole(manifest, role) {
 
 async function initializeRun(manifest, options = {}) {
   await ensureGitProject(manifest.project.root, options);
+  await ensureManagerDirExcluded(manifest.project.root, options.runner || runCommand);
   const statePath = getStatePath(manifest.project.root, manifest.run.id);
   const existing = await readJsonIfExists(statePath);
   const baseCommit = existing?.baseCommit || (await getHeadCommit(manifest.project.root, options));
@@ -868,6 +885,7 @@ async function initializeRun(manifest, options = {}) {
     projectRoot: manifest.project.root,
     manifestPath: manifest.manifestPath,
     baseCommit,
+    runBranch: existing?.runBranch || getRunBranchName(manifest.run.id),
     manifest,
     agents,
     createdAt: existing?.createdAt || nowIso(),
@@ -1028,14 +1046,17 @@ async function startTask(projectRoot, runId, taskId, options = {}) {
   await saveState(state);
 
   try {
+    await ensureStateOnRunBranch(state, runner);
     await fs.mkdir(path.dirname(agent.worktreePath), { recursive: true });
     if (!(await fileExists(agent.worktreePath))) {
+      // The run branch tip already holds every applied dependency patch.
       await runner('git', ['worktree', 'add', agent.worktreePath, '-b', agent.branch, 'HEAD'], {
         cwd: projectRoot,
         timeoutMs: 120000,
       });
+      const head = await runner('git', ['rev-parse', 'HEAD'], { cwd: agent.worktreePath });
+      agent.auditBaseCommit = head.stdout.trim() || state.baseCommit;
     }
-    await hydrateDependencyPatches(state, task, agent, options);
 
     const promptText = await fs.readFile(path.join(projectRoot, task.promptFile), 'utf8');
     const providerProfile = await getProviderProfile(agent.providerProfileId, options.providerProfileOptions || {});
@@ -1120,81 +1141,6 @@ async function startAllReady(projectRoot, runId, options = {}) {
 
   state = await loadState(projectRoot, runId);
   return toClientRun(state);
-}
-
-function collectDependencyTaskIds(state, taskId, seen = new Set(), ordered = []) {
-  const task = getTask(state, taskId);
-  for (const dependencyId of task.dependsOn) {
-    if (seen.has(dependencyId)) {
-      continue;
-    }
-    seen.add(dependencyId);
-    collectDependencyTaskIds(state, dependencyId, seen, ordered);
-    ordered.push(dependencyId);
-  }
-  return ordered;
-}
-
-async function hydrateDependencyPatches(state, task, agent, options = {}) {
-  const runner = options.runner || runCommand;
-  const dependencyIds = collectDependencyTaskIds(state, task.id);
-  const alreadyHydrated = new Set(agent.hydratedPatchPaths || []);
-  const patchesToApply = [];
-
-  for (const dependencyId of dependencyIds) {
-    const dependency = state.agents[dependencyId];
-    if (dependency?.status !== 'patch_applied' || !dependency.patchPath) {
-      continue;
-    }
-    const patchPath = path.resolve(dependency.patchPath);
-    if (alreadyHydrated.has(patchPath)) {
-      continue;
-    }
-    const patchText = await readTextMaybe(patchPath);
-    if (!patchText.trim()) {
-      alreadyHydrated.add(patchPath);
-      continue;
-    }
-    patchesToApply.push(patchPath);
-  }
-
-  for (const patchPath of patchesToApply) {
-    await runner('git', ['apply', '--check', '--whitespace=nowarn', patchPath], {
-      cwd: agent.worktreePath,
-      maxBuffer: 30 * 1024 * 1024,
-    });
-    await runner('git', ['apply', '--whitespace=nowarn', patchPath], {
-      cwd: agent.worktreePath,
-      maxBuffer: 30 * 1024 * 1024,
-    });
-    alreadyHydrated.add(patchPath);
-  }
-
-  agent.hydratedPatchPaths = [...alreadyHydrated];
-
-  if (patchesToApply.length) {
-    await runner('git', ['add', '-A'], { cwd: agent.worktreePath });
-    await runner(
-      'git',
-      [
-        '-c',
-        'user.name=MultiAgent Manager',
-        '-c',
-        'user.email=multiagent@example.local',
-        'commit',
-        '-m',
-        'multiagent: hydrate dependency patches',
-      ],
-      { cwd: agent.worktreePath, timeoutMs: 120000 },
-    );
-  }
-
-  if (!agent.auditBaseCommit || patchesToApply.length) {
-    const head = await runner('git', ['rev-parse', 'HEAD'], { cwd: agent.worktreePath });
-    agent.auditBaseCommit = head.stdout.trim() || state.baseCommit;
-  }
-
-  await saveState(state);
 }
 
 function getModuleReviewReadiness(state) {
@@ -1643,6 +1589,7 @@ async function applyPatch(projectRoot, runId, taskId, options = {}) {
 
   const patchText = agent.patchPath ? await fs.readFile(agent.patchPath, 'utf8') : '';
   if (patchText.trim()) {
+    await ensureStateOnRunBranch(state, runner);
     try {
       await runner('git', ['merge-base', '--is-ancestor', state.baseCommit, 'HEAD'], { cwd: projectRoot });
     } catch {
@@ -1656,8 +1603,12 @@ async function applyPatch(projectRoot, runId, taskId, options = {}) {
       );
     }
 
-    await runner('git', ['apply', '--check', '--whitespace=nowarn', agent.patchPath], { cwd: projectRoot });
-    await runner('git', ['apply', '--whitespace=nowarn', agent.patchPath], { cwd: projectRoot });
+    agent.appliedCommit = await applyAndCommitPatch(
+      projectRoot,
+      agent.patchPath,
+      `multiagent(${runId}): apply ${taskId}\n\n${task.feature} by ${task.owner}.`,
+      runner,
+    );
   }
 
   agent.status = 'patch_applied';
@@ -1670,6 +1621,32 @@ async function applyPatch(projectRoot, runId, taskId, options = {}) {
   }
 
   return toClientRun(await loadState(projectRoot, runId));
+}
+
+async function ensureStateOnRunBranch(state, runner) {
+  state.runBranch = state.runBranch || getRunBranchName(state.runId);
+  const result = await ensureRunBranch(state.projectRoot, state.runBranch, runner);
+  if (result.created) {
+    state.runBranchCreatedFrom = result.previousBranch;
+  }
+}
+
+/**
+ * Commit uncommitted project changes (typically the Main Architect's scaffold,
+ * docs and prompts) on the run branch so agent worktrees include them.
+ */
+async function commitRunWorkingTree(projectRoot, runId, options = {}) {
+  const runner = options.runner || runCommand;
+  const state = await loadState(projectRoot, runId);
+  await ensureStateOnRunBranch(state, runner);
+  const result = await commitWorkingTree(
+    projectRoot,
+    options.message || `multiagent(${runId}): commit planning output`,
+    runner,
+  );
+  state.preflight = null;
+  await saveState(state);
+  return { run: toClientRun(state), ...result };
 }
 
 async function rejectPatch(projectRoot, runId, taskId) {
@@ -1698,6 +1675,8 @@ async function cleanAcceptedWorktrees(projectRoot, runId, options = {}) {
         cwd: projectRoot,
         timeoutMs: 120000,
       });
+      // Its work is already committed on the run branch.
+      await runner('git', ['branch', '-D', agent.branch], { cwd: projectRoot });
       cleaned.push(agent.taskId);
     } catch (error) {
       agent.error = `Clean failed: ${error.message}`;
@@ -1778,6 +1757,7 @@ function toClientRun(state) {
     projectRoot: state.projectRoot,
     manifestPath: state.manifestPath,
     baseCommit: state.baseCommit,
+    runBranch: state.runBranch || null,
     manifest: state.manifest,
     agents,
     createdAt: state.createdAt,
@@ -1807,6 +1787,7 @@ module.exports = {
   advanceWorkflow,
   buildAgentPrompt,
   cleanAcceptedWorktrees,
+  commitRunWorkingTree,
   getModuleReviewReadiness,
   getAgentDir,
   getPatchPath,

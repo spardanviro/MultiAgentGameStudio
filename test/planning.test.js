@@ -30,9 +30,12 @@ test('buildArchitectPrompt treats input as completed spec and includes manifest 
   assert.match(prompt, /system_review:/);
   assert.match(prompt, /Make a tiny survival game/);
   assert.match(prompt, /Do not start Claude background agents yourself/);
-  assert.match(prompt, /Do not write the literal words "owned_script"/);
+  assert.match(prompt, /owned_folder: path\/to\/module_folder\//);
+  assert.match(prompt, /One agent, one module folder/);
+  assert.match(prompt, /never a path inside another module.s folder/);
+  assert.doesNotMatch(prompt, /owned_script/);
   assert.match(prompt, /actionable dispatch inputs for the Main Architect/);
-  assert.match(prompt, /exact task_id, agent owner, owned_script/);
+  assert.match(prompt, /exact task_id, agent owner, owned_folder/);
   assert.match(prompt, /related task ids, related agents, related files/);
   assert.match(prompt, /Do not scan or summarize the whole project source tree/);
   assert.match(prompt, /max_parallel_agents: 5/);

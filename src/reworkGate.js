@@ -369,8 +369,8 @@ ${requestList}
 
 For every blocking item choose exactly one action and record it in ${decisionsPath}:
 
-- reassign_to_same_agent: rework task for the same owner and owned_script
-- create_new_task: a new module task for a new script (scaffold it first)
+- reassign_to_same_agent: rework task for the same owner and owned_folder
+- create_new_task: a new module task for a new module folder (scaffold it first)
 - contract_change: update docs/module_contracts.md, then rework every affected module
 - defer: not fixed in this round; state why it is safe to proceed
 - ask_user: the spec does not settle it
@@ -387,7 +387,7 @@ Otherwise write ${manifestPath} with the same schema as ${previousManifestPath}:
 
 - run.id must be exactly ${nextRunId}.
 - Copy project, main_agent, defaults, and diagnostics from the current manifest unless a decision requires a change.
-- Include only the module tasks needed for this round. reassign_to_same_agent tasks keep the original owner and owned_script.
+- Include only the module tasks needed for this round. reassign_to_same_agent tasks keep the original owner and owned_folder.
 - Write a rework prompt for every task at work/prompts/${nextRunId}/<task_id>.md that quotes the exact rework items (problem, expected_behavior, actual_behavior, evidence) the task must resolve.
 - Always include module_review, depending on every rework module task. Include integration if glue code or contracts are affected, and system_review whenever integration runs or a system_review item triggered this round.
 - Review and integration report paths must live under reports/reviews/${nextRunId}/ and work/integration/${nextRunId}_*.
@@ -398,7 +398,7 @@ Otherwise write ${manifestPath} with the same schema as ${previousManifestPath}:
 - Do not implement module logic, fix code, review, or integrate yourself.
 - Do not modify tasks/task_manifest.yaml, the current manifest, or the reports of the current run.
 - Do not scan or summarize the whole project source tree.
-- One agent owns one source script; one source script has one owner.
+- One agent owns one module folder; one module folder has one owner.
 `;
 }
 

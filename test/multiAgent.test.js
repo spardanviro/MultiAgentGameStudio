@@ -122,7 +122,7 @@ test('validateManifest rejects duplicate owned scripts', () => {
 
   assert.throws(
     () => validateManifest(manifest, 'C:/project/tasks/task_manifest.yaml'),
-    /Duplicate owned_script/,
+    /Module ownership overlap: player-health owns script src\/player\/player_health\.gd/,
   );
 });
 
@@ -219,7 +219,7 @@ test('validateManifest rejects integration allowed_files that include module own
 
   assert.throws(
     () => validateManifest(manifest, 'C:/project/tasks/task_manifest.yaml'),
-    /must not include module owned_script/,
+    /integration\.allowed_files entry src\/player\/player_health\.gd reaches into player-health's owned script/,
   );
 });
 
@@ -241,7 +241,7 @@ test('validateManifest rejects system review allowed_files that include implemen
       allowed_files: [
         'reports/reviews/run-001/system_review.md',
         'work/requests/run-001_system_review_request.md',
-        'src/player/player_health.gd',
+        'src/game/main.gd',
       ],
     },
   });
@@ -268,7 +268,7 @@ test('buildAgentPrompt makes review reports actionable for the main architect', 
     'Review system.',
   );
 
-  assert.match(moduleReviewPrompt, /exact task_id, agent owner, owned_script/);
+  assert.match(moduleReviewPrompt, /exact task_id, agent owner, owned_folder/);
   assert.match(moduleReviewPrompt, /dispatch plan for module rework/);
   assert.match(systemReviewPrompt, /related task ids, related agents, related files/);
   assert.match(systemReviewPrompt, /dispatch plan for integration or global rework/);

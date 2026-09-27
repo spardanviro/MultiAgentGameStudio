@@ -68,14 +68,20 @@ The architect writes:
 tasks/task_manifest.yaml
 ```
 
-Every module task must declare:
+Every module task owns one module folder:
 
-- `owned_script`
-- `test_file`
-- `prompt_file`
-- `module_report`
-- `interface_request`
-- `allowed_files`
+```yaml
+tasks:
+  - id: player-health
+    owned_folder: src/player/health/     # the agent may create, edit and delete files here
+    test_folder: tests/player/health/    # optional, owned exclusively as well
+    prompt_file: work/prompts/player-health.md
+    module_report: work/modules/player-health/module_report.md
+    interface_request: work/modules/player-health/interface_change_request.md
+    allowed_files: []                    # extra files or folders (ending in /) outside the module
+```
+
+The owned folder, test folder, report and request are always allowed. One module folder has one owner: the manifest is rejected when two modules own nested or identical folders, or when any other task (including integration) lists a path inside a module's folder. `owned_script` is still accepted for older manifests and owns a single file.
 
 Model routing can be configured per layer:
 

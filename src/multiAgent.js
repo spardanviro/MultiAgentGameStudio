@@ -13,6 +13,8 @@ const {
 const { logEvent } = require('./managerLogger');
 const { DEFAULT_PROVIDER_ID, buildProviderEnvAsync, getProviderProfile } = require('./providerProfiles');
 const diagnostics = require('./diagnostics');
+const { createScopeMatcher, normalizeScopeEntry } = require('./fileScope');
+const { validateModuleOwnership } = require('./moduleOwnership');
 const {
   applyAndCommitPatch,
   commitWorkingTree,
@@ -198,9 +200,13 @@ function normalizeRelPath(value, fieldName = 'path') {
   return normalized;
 }
 
+// allowed_files entries are files or folders ("src/player/"). A module's
+// owned folder/script and its test/report/request paths are always included.
 function normalizeAllowedFiles(task) {
   const fromTask = Array.isArray(task.allowed_files) ? task.allowed_files : [];
   const required = [
+    task.owned_folder,
+    task.test_folder,
     task.owned_script,
     task.test_file,
     task.module_report,
@@ -216,7 +222,7 @@ function normalizeAllowedFiles(task) {
     if (!entry) {
       continue;
     }
-    unique.add(normalizeRelPath(entry, 'allowed_files entry'));
+    unique.add(normalizeScopeEntry(entry, 'allowed_files entry'));
   }
 
   return [...unique];
@@ -360,7 +366,7 @@ function normalizeWorkflowTasks(rawManifest) {
           `work/requests/${rawManifest.run?.id || 'run'}_integration_request.md`,
       ],
       depends_on: integration.depends_on || ['module-review'],
-      acceptance: integration.acceptance || ['Wire accepted modules without editing module-owned scripts.'],
+      acceptance: integration.acceptance || ['Wire accepted modules without editing module-owned folders.'],
     });
   }
 
@@ -416,7 +422,6 @@ function validateManifest(rawManifest, manifestPath) {
   }
 
   const taskIds = new Set();
-  const ownedScripts = new Set();
   const normalizedTasks = tasks.map((task, index) => {
     if (!task || typeof task !== 'object') {
       throw new Error(`tasks[${index}] must be an object.`);
@@ -429,20 +434,20 @@ function validateManifest(rawManifest, manifestPath) {
     taskIds.add(id);
 
     const role = task.role || 'sub';
-    const ownedScript = task.owned_script
+    // Module tasks own a folder (owned_folder); owned_script is the legacy
+    // single-file form and is still accepted.
+    const ownedFolder = task.owned_folder
+      ? normalizeScopeEntry(task.owned_folder, `${id}.owned_folder`, { folder: true })
+      : null;
+    const ownedScript = !ownedFolder && task.owned_script
       ? normalizeRelPath(task.owned_script, `${id}.owned_script`)
       : null;
-    if (!ownedScript && role === 'sub') {
-      throw new Error(`${id}.owned_script is required for sub tasks.`);
+    if (role === 'sub' && !ownedFolder && !ownedScript) {
+      throw new Error(`${id}.owned_folder is required for module (sub) tasks.`);
     }
-
-    if (ownedScript) {
-      const ownedKey = ownedScript.toLowerCase();
-      if (ownedScripts.has(ownedKey)) {
-        throw new Error(`Duplicate owned_script: ${ownedScript}`);
-      }
-      ownedScripts.add(ownedKey);
-    }
+    const testFolder = task.test_folder
+      ? normalizeScopeEntry(task.test_folder, `${id}.test_folder`, { folder: true })
+      : null;
 
     const testFile = task.test_file ? normalizeRelPath(task.test_file, `${id}.test_file`) : null;
     const moduleReport = task.module_report
@@ -466,6 +471,8 @@ function validateManifest(rawManifest, manifestPath) {
     const promptFile = normalizeRelPath(task.prompt_file, `${id}.prompt_file`);
     const allowedFiles = normalizeAllowedFiles({
       ...task,
+      owned_folder: ownedFolder,
+      test_folder: testFolder,
       owned_script: ownedScript,
       test_file: testFile,
       module_report: moduleReport,
@@ -484,7 +491,9 @@ function validateManifest(rawManifest, manifestPath) {
       provider: String(task.provider || getRawDefaultProviderForRole(rawManifest.defaults, role)),
       model: task.model || getRawDefaultModelForRole(rawManifest.defaults, role),
       effort: String(task.effort || getRawDefaultEffortForRole(rawManifest.defaults, role)),
+      ownedFolder,
       ownedScript,
+      testFolder,
       testFile,
       promptFile,
       moduleReport,
@@ -507,19 +516,7 @@ function validateManifest(rawManifest, manifestPath) {
     }
   }
 
-  const moduleOwnedScripts = new Set(
-    normalizedTasks
-      .filter((task) => task.role === 'sub' && task.ownedScript)
-      .map((task) => task.ownedScript.toLowerCase()),
-  );
-  for (const task of normalizedTasks.filter((entry) => entry.role === 'integration')) {
-    const forbidden = task.allowedFiles.filter((file) => moduleOwnedScripts.has(file.toLowerCase()));
-    if (forbidden.length) {
-      throw new Error(
-        `${task.id}.allowed_files must not include module owned_script implementation files: ${forbidden.join(', ')}`,
-      );
-    }
-  }
+  validateModuleOwnership(normalizedTasks);
   for (const task of normalizedTasks.filter((entry) => entry.role === 'system_review')) {
     const forbidden = task.allowedFiles.filter(isImplementationPath);
     if (forbidden.length) {
@@ -803,7 +800,9 @@ function createAgentState(task, manifest, existingAgent) {
     worktreePath:
       existingAgent?.worktreePath || getWorktreePath(manifest.project.root, manifest.run.id, task.id),
     branch: existingAgent?.branch || `multiagent/${manifest.run.id}/${task.id}`,
+    ownedFolder: task.ownedFolder || null,
     ownedScript: task.ownedScript,
+    testFolder: task.testFolder || null,
     testFile: task.testFile,
     moduleReport: task.moduleReport,
     interfaceRequest: task.interfaceRequest,
@@ -974,10 +973,13 @@ function buildResumePrompt(task) {
 function buildAgentPrompt(task, promptText) {
   const allowedList = task.allowedFiles.map((file) => `- ${file}`).join('\n');
   const ownedSourceFolder = task.ownedScript ? path.posix.dirname(task.ownedScript) : null;
+  const moduleGuidance = task.ownedFolder
+    ? `You are a module implementation agent. You own the module folder ${task.ownedFolder}${task.testFolder ? ` and the test folder ${task.testFolder}` : ''}: you may create, edit, split, and delete files inside them as the module needs, keeping its public API consistent with docs/module_contracts.md. Do not browse or edit other modules' folders by default. You may only modify the allowed files listed above.`
+    : null;
   const roleGuidance = {
-    sub: `You are a module implementation agent. Implement exactly one assigned script and its matching test/report files. Your local source working area is ${ownedSourceFolder || 'the owned script folder'}. You may read source files in that folder when needed, but do not browse unrelated source folders by default. You may only modify the allowed files listed above.`,
-    module_review: `You are a module review agent. Review whether module agents completed their assigned work. Do not modify source scripts. Every finding must name the exact task_id, agent owner, owned_script, evidence files, violated contract or acceptance criterion, and a recommended action for the Main Architect such as reassign_to_same_agent, create_new_task, contract_change, or main_agent_decision. Your report must be directly usable as a dispatch plan for module rework. Include a YAML block named rework_items with fields: issue_id, severity, task_id, agent_owner, owned_script, problem, expected_behavior, actual_behavior, evidence, recommended_action, blocks_integration.`,
-    integration: `You are an integration agent. Write only explicit glue/composition/integration files listed below. Do not modify module-owned scripts. Do not read module implementation source files by default. Use docs/module_layout.md and the integration_context file to understand folder-level module clusters and integration seams. Integrate through docs/module_contracts.md, public APIs, signals, events, data contracts, module reports, and interface requests. If a required API or signal is missing or unclear, write an interface request instead of inspecting or editing module internals.`,
+    sub: moduleGuidance || `You are a module implementation agent. Implement exactly one assigned script and its matching test/report files. Your local source working area is ${ownedSourceFolder || 'the owned script folder'}. You may read source files in that folder when needed, but do not browse unrelated source folders by default. You may only modify the allowed files listed above.`,
+    module_review: `You are a module review agent. Review whether module agents completed their assigned work. Do not modify source scripts. Every finding must name the exact task_id, agent owner, owned_folder, evidence files, violated contract or acceptance criterion, and a recommended action for the Main Architect such as reassign_to_same_agent, create_new_task, contract_change, or main_agent_decision. Your report must be directly usable as a dispatch plan for module rework. Include a YAML block named rework_items with fields: issue_id, severity, task_id, agent_owner, owned_folder, problem, expected_behavior, actual_behavior, evidence, recommended_action, blocks_integration.`,
+    integration: `You are an integration agent. Write only explicit glue/composition/integration files listed below. Do not modify files inside module-owned folders. Do not read module implementation source files by default. Use docs/module_layout.md and the integration_context file to understand folder-level module clusters and integration seams. Integrate through docs/module_contracts.md, public APIs, signals, events, data contracts, module reports, and interface requests. If a required API or signal is missing or unclear, write an interface request instead of inspecting or editing module internals.`,
     system_review: `You are a system review agent. Review the integrated project against the final spec. Do not modify source scripts. Default to reviewing contracts, reports, patch summaries, integration context, integration reports, prior review reports, supplied test output, and supplied runtime logs. Do not read implementation source files by default. If source inspection is required, write a source_inspection_request in the allowed request file with the exact file path, reason, expected risk, and question to answer; do not inspect the source in this task. Every finding must name related task ids, related agents, related files, the likely responsible owner, whether it blocks release, and a recommended action for the Main Architect. Your report must be directly usable as a dispatch plan for integration or global rework. Include a YAML block named rework_items with fields: issue_id, severity, scope, related_task_ids, related_agents, related_files, problem, expected_behavior, actual_behavior, recommended_owner, recommended_action, blocks_release.`,
   };
 
@@ -1473,7 +1475,7 @@ async function getChangedFiles(worktreePath, baseCommit, options = {}) {
 async function createPatchForAgent(state, agent, options = {}) {
   const runner = options.runner || runCommand;
   const patchPath = getPatchPath(state.projectRoot, state.runId, agent.taskId);
-  const untrackedAllowed = agent.changedFiles.filter((file) => agent.allowedFiles.includes(file));
+  const untrackedAllowed = agent.changedFiles.filter(createScopeMatcher(agent.allowedFiles));
   const auditBaseCommit = agent.auditBaseCommit || state.baseCommit;
 
   if (untrackedAllowed.length) {
@@ -1503,7 +1505,8 @@ async function auditAgentInState(state, taskId, options = {}) {
     agent.auditBaseCommit || state.baseCommit,
     options,
   );
-  agent.violations = agent.changedFiles.filter((file) => !agent.allowedFiles.includes(file));
+  const isAllowed = createScopeMatcher(agent.allowedFiles);
+  agent.violations = agent.changedFiles.filter((file) => !isAllowed(file));
 
   if (agent.violations.length) {
     agent.status = 'policy_violation';

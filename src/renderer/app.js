@@ -788,7 +788,7 @@ function renderAgentNode(agent) {
       <div class="node-meta">${escapeHtml(roleLabels[agent.role] || agent.role)}</div>
       <div class="node-meta">provider: ${escapeHtml(agent.providerProfileId || 'claude-subscription')}</div>
       <div class="node-meta">model: ${escapeHtml(agent.model)} / effort: ${escapeHtml(agent.effort || '-')}</div>
-      <div class="node-meta">${escapeHtml(agent.ownedScript || agent.reviewReport || agent.integrationReport || agent.systemReviewReport || '-')}</div>
+      <div class="node-meta">${escapeHtml(agent.ownedFolder || agent.ownedScript || agent.reviewReport || agent.integrationReport || agent.systemReviewReport || '-')}</div>
       <div class="node-meta">session: ${escapeHtml(agent.claudeSessionId || '-')}</div>
     </button>
   `;

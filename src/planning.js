@@ -247,11 +247,13 @@ The user has already discussed the game design in ChatGPT, Claude Chat, or anoth
 - You must not implement real module logic beyond scaffold stubs and TODO markers.
 - Do not rewrite the design, expand vague product ideas, or invent missing game rules as if you were still in a design chat.
 - If the spec is too ambiguous to create a safe manifest, write questions to work/requests/planning_questions.md and stop before creating a misleading manifest.
-- Keep every module task to one owned source script.
-- Never assign the same owned_script to more than one module task.
-- If a future feature needs a new script, represent it as a new module task with its own owned_script.
+- Every module task owns exactly one module folder (owned_folder). The module agent may create, split, and delete scripts inside it.
+- Never let two module tasks own the same folder, or a folder inside another module's folder. Sibling folders are fine.
+- Size a module folder as one cohesive feature that one agent can finish in one session: a handful of closely related scripts, not a whole subsystem and not a single helper.
+- Give each module its own test folder (test_folder) when tests live outside the module folder; test folders are owned exclusively too.
+- If a future feature does not belong in an existing module, represent it as a new module task with its own owned_folder.
 - Before creating scaffold source scripts, design and create a clear source folder hierarchy.
-- Place modules that interact frequently in the same feature folder or neighboring subfolders, while keeping each script single-responsibility.
+- Place modules that interact frequently in neighboring folders under the same feature folder, while keeping each module folder single-responsibility.
 - Do not scatter tightly coupled gameplay modules across unrelated folders.
 - Glue/integration work must be handled by an integration agent after module patches are accepted.
 - Review must be handled by separate module_review and system_review agents.
@@ -265,15 +267,15 @@ Create or update these files when the spec is sufficiently clear:
 - docs/architecture_principles.md, if missing
 - docs/model_routing.md, if missing
 - docs/architecture.md
-- docs/module_layout.md describing source folders, module clusters, high-frequency interactions, owned scripts, and integration seams
+- docs/module_layout.md describing source folders, module clusters, high-frequency interactions, owned module folders, and integration seams
 - docs/module_contracts.md
 - tasks/task_manifest.yaml
 - work/prompts/<task_id>.md for every module/review/integration agent
 - work/modules/<task_id>/module_report.md scaffold placeholders, if useful
 - work/integration/${runId}_integration_context.md containing only module responsibilities, public APIs, signals/events, data contracts, execution order, and integration notes.
 - work/requests/.gitkeep or request placeholders, if useful
-- scaffolded owned source scripts for module tasks
-- matching test file scaffolds for module tasks
+- the owned module folder for every module task, with scaffold scripts for its public API
+- matching test folder or test file scaffolds for module tasks
 - source folders for every planned module before writing scaffold files
 - diagnostics configuration in tasks/task_manifest.yaml for terminal-based compile checks
 
@@ -281,7 +283,7 @@ Create or update these files when the spec is sufficiently clear:
 
 Write tasks/task_manifest.yaml with this shape:
 
-Replace every placeholder with a concrete project-relative value. In particular, allowed_files must repeat the actual owned_script, test_file, module_report, and interface_request paths. Do not write the literal words "owned_script", "test_file", "module_report", or "interface_request" as allowed file entries.
+Replace every placeholder with a concrete project-relative value. owned_folder and test_folder end with "/". The manager adds owned_folder, test_folder, module_report, and interface_request to allowed_files automatically; list extra entries in allowed_files only when a module genuinely needs a file outside its folders, and never a path inside another module's folder.
 
 \`\`\`yaml
 version: 1
@@ -329,16 +331,12 @@ tasks:
     provider: ${moduleProvider}
     model: ${moduleModel}
     effort: ${moduleEffort}
-    owned_script: path/relative/to/project
-    test_file: path/relative/to/project
+    owned_folder: path/to/module_folder/
+    test_folder: path/to/module_tests/
     prompt_file: work/prompts/<task_id>.md
     module_report: work/modules/<task_id>/module_report.md
     interface_request: work/modules/<task_id>/interface_change_request.md
-    allowed_files:
-      - owned_script
-      - test_file
-      - module_report
-      - interface_request
+    allowed_files: []
     depends_on: []
     acceptance:
       - clear acceptance criterion
@@ -411,38 +409,36 @@ For diagnostics:
 
 For every module prompt:
 
-- Include the exact owned script path.
-- Include the source folder that contains the owned script and state that this is the agent's local source working area.
-- Include the exact test file path.
+- Include the exact owned module folder and test folder.
+- List the scaffold scripts already in the folder and the public API the module must expose.
 - Include the relevant module contract.
 - Include acceptance criteria.
-- State that the implementation agent may read source files in its owned script folder when needed, but must not browse unrelated source folders by default.
-- State that the implementation agent may only modify files listed in allowed_files.
-- State that the implementation agent must not edit any other source script.
-- State that if it needs another file, it must write the interface_request instead.
+- State that the implementation agent may create, split, and delete files inside its owned folders, but must not browse unrelated module folders by default.
+- State that edits outside its owned folders and allowed_files are blocked by the manager.
+- State that if it needs a change in another module's folder, it must write the interface_request instead.
 
 For module_review:
 
 - Review whether each module agent completed its assigned feature.
 - Check if each patch stayed inside allowed files.
 - Check whether each module report is credible.
-- For every defect, identify the exact task_id, agent owner, owned_script, violated contract or acceptance criterion, evidence file(s), and whether the issue should be sent back to the same agent, split into a new task, escalated to a contract change, or left for Main Architect decision.
+- For every defect, identify the exact task_id, agent owner, owned_folder, violated contract or acceptance criterion, evidence file(s), and whether the issue should be sent back to the same agent, split into a new task, escalated to a contract change, or left for Main Architect decision.
 - The module review report must be grouped by module task and must be directly usable by the Main Architect as a refactor/redo dispatch plan.
-- Include a YAML block named rework_items with fields: issue_id, severity, task_id, agent_owner, owned_script, problem, expected_behavior, actual_behavior, evidence, recommended_action, blocks_integration.
+- Include a YAML block named rework_items with fields: issue_id, severity, task_id, agent_owner, owned_folder, problem, expected_behavior, actual_behavior, evidence, recommended_action, blocks_integration.
 - Do not edit source scripts.
 
 For integration:
 
 - Work only after module patches are accepted.
 - Write only explicit glue/composition files in allowed_files.
-- Do not edit module-owned scripts.
+- Do not edit files inside module-owned folders.
 - Do not read module implementation source files by default.
 - Use only docs/game_design.md, docs/architecture.md, docs/module_contracts.md, tasks/task_manifest.yaml, module reports, interface requests, integration_context, and assigned glue/composition files.
 - Use docs/module_layout.md and integration_context to understand which module folders are adjacent and where glue/composition should live.
 - Integrate modules through public APIs, signals, events, and data contracts only.
 - If a required API/signal/event is missing or unclear, write the integration interface_request instead of inspecting or editing module internals.
-- integration_context must summarize each module with: module_id, owned_script, responsibility, public_api, signals, data_inputs, data_outputs, events_consumed, events_emitted, execution_order, integration_notes, forbidden_dependencies.
-- integration.allowed_files must not include module owned_script implementation files.
+- integration_context must summarize each module with: module_id, owned_folder, responsibility, public_api, signals, data_inputs, data_outputs, events_consumed, events_emitted, execution_order, integration_notes, forbidden_dependencies.
+- integration.allowed_files must stay outside every module's owned_folder and test_folder (the manager rejects the manifest otherwise). Put glue/composition in its own folder.
 
 For system_review:
 
@@ -460,8 +456,8 @@ For system_review:
 For Main Architect re-dispatch:
 
 - The manager parses every review report's rework_items block. Blocking items stop the pipeline and the manager starts a separate rework round with its own prompt naming the exact manifest path and run id to write. Do not create rework manifests during this planning task.
-- Rework manifests must keep the same ownership rule: one agent owns one source script, one source script has one owner.
-- If review identifies a missing script, create a new task and scaffold for that script rather than allowing an existing agent to edit outside its owned_script.
+- Rework manifests must keep the same ownership rule: one agent owns one module folder, one module folder has one owner.
+- If review identifies missing functionality inside a module, send it back to that module's owner; if it belongs to no module, create a new module task with its own folder rather than widening another agent's scope.
 
 ## Architecture Rules
 
@@ -475,9 +471,9 @@ For Main Architect re-dispatch:
 - Design data structures before systems.
 - Critical gameplay logic needs an explicit execution order.
 - Separate simulation from presentation.
-- One script, one responsibility.
-- One agent, one source script.
-- One source script, one owner.
+- One module folder, one responsibility.
+- One agent, one module folder.
+- One module folder, one owner.
 
 ## AI Implementation Spec
 

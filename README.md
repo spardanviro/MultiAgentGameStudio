@@ -14,10 +14,11 @@ Local Electron control surface for Claude Code background-agent workflows.
 - Show the persistent main agent as the root node.
 - Show module agents, module review, integration glue, and system review as separate pipeline stages.
 - Create one independent git worktree per background agent.
-- Start Claude Code background agents with `claude --bg`.
-- Sync status with `claude agents --json --all`.
+- Run every agent through the Claude Agent SDK in a detached runner process (`src/agentRunner.mjs`) that survives the app closing and reports through `.multiagent/runs/<run_id>/agents/<task_id>/status.json` and `agent.log`.
+- Block out-of-scope file writes while the agent runs (SDK `PreToolUse` hook on Edit/Write/MultiEdit/NotebookEdit), with the post-run audit as a backstop for writes made through Bash.
+- Resume a blocked or interrupted agent in the same Claude session.
 - Inspect each node's prompt, allowed files, reports, diff, and policy violations.
-- Open an embedded terminal drawer for `claude attach <id>` or `claude logs <id>`.
+- Stream an agent's log into the terminal drawer, or continue a stopped session with `claude --resume <session>` in a terminal window.
 - Audit changed files after each agent finishes.
 - Generate a patch for compliant work and apply it to the main project only when Apply Patch is clicked.
 - Run terminal-based compile diagnostics and capture errors/warnings into reports for the Main Architect.

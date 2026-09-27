@@ -24,6 +24,7 @@ const {
   syncRun,
   validateManifest,
 } = require('../src/multiAgent');
+const { createFakeLauncher, runnerAlive, runnerDead, writeRunnerStatus } = require('./helpers/fakeAgents');
 
 function run(command, args, options = {}) {
   return new Promise((resolve, reject) => {
@@ -314,7 +315,7 @@ test('buildAgentPrompt constrains integration agents to contracts instead of imp
   assert.match(prompt, /public APIs, signals, events, data contracts/);
 });
 
-test('startTask creates running state with a fake Claude CLI', async () => {
+test('startTask launches an agent runner with the task spec', async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'multiagent-fake-'));
   await fs.mkdir(path.join(root, 'work', 'prompts'), { recursive: true });
   await fs.writeFile(path.join(root, 'work', 'prompts', 'player_health.md'), 'Implement health.\n');
@@ -347,14 +348,59 @@ test('startTask creates running state with a fake Claude CLI', async () => {
     return { stdout: '', stderr: '' };
   };
 
+  const fake = createFakeLauncher();
   await initializeRun(manifest, { runner });
-  const runState = await startTask(root, 'run-001', 'player-health', { runner });
+  const runState = await startTask(root, 'run-001', 'player-health', { runner, launchAgent: fake.launchAgent });
+  const agent = runState.agents.find((entry) => entry.taskId === 'player-health');
+  const [launch] = fake.launches;
+
+  assert.equal(agent.status, 'running');
+  assert.match(agent.claudeSessionId, /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+  assert.equal(agent.runnerPid, 4242);
+  assert.equal(launch.spec.sessionId, agent.claudeSessionId);
+  assert.equal(launch.spec.resume, false);
+  assert.equal(launch.spec.effort, 'high');
+  assert.equal(launch.spec.cwd, agent.worktreePath);
+  assert.equal(launch.spec.projectConfigRoot, root);
+  assert.deepEqual(launch.spec.allowedPaths, agent.allowedFiles);
+  assert.match(launch.spec.prompt, /You may only modify:/);
+  assert.equal(agent.logPath, path.join(launch.dir, 'agent.log'));
+  assert.ok(!calls.some((call) => call.command === 'claude' && call.args.includes('--bg')));
+});
+
+test('startTask resumes the same session for a blocked agent', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'multiagent-resume-'));
+  await fs.mkdir(path.join(root, 'work', 'prompts'), { recursive: true });
+  await fs.writeFile(path.join(root, 'work', 'prompts', 'player_health.md'), 'Implement health.\n');
+  const manifest = validateManifest(makeManifest(root), path.join(root, 'tasks', 'task_manifest.yaml'));
+  const runner = async (command, args) => {
+    if (command === 'git' && args[0] === 'rev-parse' && args[1] === '--is-inside-work-tree') {
+      return { stdout: 'true\n', stderr: '' };
+    }
+    if (command === 'git' && args[0] === 'rev-parse') {
+      return { stdout: 'abc123\n', stderr: '' };
+    }
+    if (command === 'claude' && args[0] === 'auth') {
+      return { stdout: '{"loggedIn":true}\n', stderr: '' };
+    }
+    return { stdout: '', stderr: '' };
+  };
+  const fake = createFakeLauncher();
+  await initializeRun(manifest, { runner });
+  const state = await loadState(root, 'run-001');
+  const sessionId = '11111111-2222-4333-8444-555555555555';
+  Object.assign(state.agents['player-health'], { status: 'blocked_rate_limit', claudeSessionId: sessionId });
+  await fs.mkdir(state.agents['player-health'].worktreePath, { recursive: true });
+  await fs.writeFile(getStatePath(root, 'run-001'), JSON.stringify(state, null, 2), 'utf8');
+
+  const runState = await startTask(root, 'run-001', 'player-health', { runner, launchAgent: fake.launchAgent });
   const agent = runState.agents.find((entry) => entry.taskId === 'player-health');
 
   assert.equal(agent.status, 'running');
-  assert.equal(agent.claudeSessionId, '7c5dcf5d');
-  assert.ok(calls.some((call) => call.command === 'claude' && call.args.includes('--bg')));
-  assert.ok(calls.some((call) => call.command === 'claude' && call.args.includes('--effort') && call.args.includes('high')));
+  assert.equal(agent.claudeSessionId, sessionId);
+  assert.equal(fake.launches[0].spec.resume, true);
+  assert.equal(fake.launches[0].spec.sessionId, sessionId);
+  assert.match(fake.launches[0].spec.prompt, /Continue the same task/);
 });
 
 test('startTask injects provider profile environment for gateway agents', async () => {
@@ -398,8 +444,8 @@ test('startTask injects provider profile environment for gateway agents', async 
     }),
     path.join(root, 'tasks', 'task_manifest.yaml'),
   );
-  let claudeEnv = null;
-  const runner = async (command, args, options = {}) => {
+  const fake = createFakeLauncher();
+  const runner = async (command, args) => {
     if (command === 'git' && args[0] === 'rev-parse' && args[1] === '--is-inside-work-tree') {
       return { stdout: 'true\n', stderr: '' };
     }
@@ -412,10 +458,6 @@ test('startTask injects provider profile environment for gateway agents', async 
     if (command === 'claude' && args[0] === 'auth') {
       return { stdout: '{"loggedIn":true,"authMethod":"claude.ai"}\n', stderr: '' };
     }
-    if (command === 'claude') {
-      claudeEnv = options.env;
-      return { stdout: 'Started background session gateway123\n', stderr: '' };
-    }
     throw new Error(`Unexpected command ${command}`);
   };
 
@@ -424,13 +466,16 @@ test('startTask injects provider profile environment for gateway agents', async 
     runner,
     env: { GATEWAY_KEY: 'secret-token', PATH: 'x' },
     providerProfileOptions: { filePath: profilePath },
+    launchAgent: fake.launchAgent,
   });
+  const claudeEnv = fake.launches[0].env;
   const agent = runState.agents.find((entry) => entry.taskId === 'player-health');
 
   assert.equal(agent.providerProfileId, 'gateway');
   assert.equal(agent.model, 'vendor/model-a');
   assert.equal(claudeEnv.ANTHROPIC_BASE_URL, 'https://gateway.example');
   assert.equal(claudeEnv.ANTHROPIC_AUTH_TOKEN, 'secret-token');
+  assert.ok(!JSON.stringify(fake.launches[0].spec).includes('secret-token'));
 });
 
 test('startAllReady respects max_parallel_agents and queues the rest', async () => {
@@ -481,14 +526,11 @@ test('startAllReady respects max_parallel_agents and queues the rest', async () 
     if (command === 'claude' && args[0] === 'auth') {
       return { stdout: '{"loggedIn":true,"authMethod":"claude.ai"}\n', stderr: '' };
     }
-    if (command === 'claude') {
-      return { stdout: `Started background session ${args[2]}-session\n`, stderr: '' };
-    }
     throw new Error(`Unexpected command ${command}`);
   };
 
   await initializeRun(manifest, { runner });
-  const runState = await startAllReady(root, 'run-001', { runner });
+  const runState = await startAllReady(root, 'run-001', { runner, launchAgent: createFakeLauncher().launchAgent });
   const statuses = Object.fromEntries(runState.agents.map((agent) => [agent.taskId, agent.status]));
 
   assert.equal(Object.values(statuses).filter((status) => status === 'running').length, 1);
@@ -563,7 +605,7 @@ test('recoverRun marks missing worktree for active agents', async () => {
   assert.deepEqual(result.recovery.worktreeMissing, ['player-health']);
 });
 
-test('recoverRun marks missing Claude background session when worktree exists', async () => {
+test('recoverRun marks a vanished agent runner as session_missing', async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'multiagent-recover-session-'));
   const runner = async (command, args) => {
     if (command === 'git' && args[0] === 'rev-parse' && args[1] === '--is-inside-work-tree') {
@@ -571,9 +613,6 @@ test('recoverRun marks missing Claude background session when worktree exists', 
     }
     if (command === 'git' && args[0] === 'rev-parse') {
       return { stdout: 'abc123\n', stderr: '' };
-    }
-    if (command === 'claude' && args[0] === 'agents') {
-      return { stdout: '[]', stderr: '' };
     }
     return { stdout: '', stderr: '' };
   };
@@ -583,10 +622,12 @@ test('recoverRun marks missing Claude background session when worktree exists', 
   const agentState = state.agents['player-health'];
   await fs.mkdir(agentState.worktreePath, { recursive: true });
   agentState.status = 'running';
-  agentState.claudeSessionId = 'missing123';
+  agentState.claudeSessionId = '11111111-2222-4333-8444-555555555555';
+  agentState.agentDir = path.join(root, '.multiagent', 'runs', 'run-001', 'agents', 'player-health');
+  await writeRunnerStatus(agentState.agentDir, { state: 'running' });
   await fs.writeFile(getStatePath(root, 'run-001'), `${JSON.stringify(state, null, 2)}\n`, 'utf8');
 
-  const result = await recoverRun(root, 'run-001', { runner });
+  const result = await recoverRun(root, 'run-001', { runner, agentStatusOptions: runnerDead });
   const agent = result.run.agents.find((entry) => entry.taskId === 'player-health');
 
   assert.equal(agent.status, 'session_missing');
@@ -621,9 +662,6 @@ test('advanceModuleReviewIfReady starts review only after all module patches are
     if (command === 'claude' && args[0] === 'auth') {
       return { stdout: '{"loggedIn":true,"authMethod":"claude.ai"}\n', stderr: '' };
     }
-    if (command === 'claude') {
-      return { stdout: 'Started background session review123\n', stderr: '' };
-    }
     return { stdout: '', stderr: '' };
   };
 
@@ -635,12 +673,12 @@ test('advanceModuleReviewIfReady starts review only after all module patches are
   state.agents['player-health'].patchPath = patchPath;
   await fs.writeFile(statePath, JSON.stringify(state, null, 2), 'utf8');
 
-  const result = await advanceModuleReviewIfReady(root, 'run-001', { runner });
+  const result = await advanceModuleReviewIfReady(root, 'run-001', { runner, launchAgent: createFakeLauncher().launchAgent });
   const reviewAgent = result.run.agents.find((agent) => agent.taskId === 'module-review');
 
   assert.equal(result.advanced, true);
   assert.equal(reviewAgent.status, 'running');
-  assert.equal(reviewAgent.claudeSessionId, 'review123');
+  assert.match(reviewAgent.claudeSessionId, /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
   assert.ok(calls.some((call) => call.command === 'git' && call.args[0] === 'apply'));
   assert.ok(calls.some((call) => call.command === 'git' && call.args.includes('multiagent: hydrate dependency patches')));
 });
@@ -677,9 +715,6 @@ test('advanceWorkflow runs module diagnostics before starting module review', as
     if (command === 'claude' && args[0] === 'auth') {
       return { stdout: '{"loggedIn":true,"authMethod":"claude.ai"}\n', stderr: '' };
     }
-    if (command === 'claude') {
-      return { stdout: 'Started background session review123\n', stderr: '' };
-    }
     return { stdout: '', stderr: '' };
   };
   const diagnosticsCalls = [];
@@ -708,6 +743,7 @@ test('advanceWorkflow runs module diagnostics before starting module review', as
   const result = await advanceWorkflow(root, 'run-001', {
     runner,
     diagnosticsOptions: { runner: diagnosticsRunner },
+    launchAgent: createFakeLauncher().launchAgent,
   });
   const reviewAgent = result.run.agents.find((agent) => agent.taskId === 'module-review');
 
@@ -827,7 +863,7 @@ test('applyPatch applies a ready patch to the main project', async () => {
   assert.match(savedState, /patch_applied/);
 });
 
-async function setupSyncScenario(agentPatch, agentsJson) {
+async function setupSyncScenario(agentPatch, runnerStatus) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'multiagent-sync-'));
   const runner = async (command, args) => {
     if (command === 'git' && args[0] === 'rev-parse' && args[1] === '--is-inside-work-tree') {
@@ -836,72 +872,65 @@ async function setupSyncScenario(agentPatch, agentsJson) {
     if (command === 'git' && args[0] === 'rev-parse') {
       return { stdout: 'abc123\n', stderr: '' };
     }
-    if (command === 'claude' && args[0] === 'agents') {
-      return { stdout: JSON.stringify(agentsJson), stderr: '' };
-    }
     return { stdout: '', stderr: '' };
   };
   const manifest = validateManifest(makeManifest(root), path.join(root, 'tasks', 'task_manifest.yaml'));
   await initializeRun(manifest, { runner });
   const state = await loadState(root, 'run-001');
-  Object.assign(state.agents['player-health'], agentPatch);
+  const agentDir = path.join(root, '.multiagent', 'runs', 'run-001', 'agents', 'player-health');
+  Object.assign(state.agents['player-health'], { agentDir, claudeSessionId: '11111111-2222-4333-8444-555555555555' }, agentPatch);
   await fs.writeFile(getStatePath(root, 'run-001'), JSON.stringify(state, null, 2), 'utf8');
+  if (runnerStatus) {
+    await writeRunnerStatus(agentDir, runnerStatus);
+  }
   return { root, runner };
 }
 
-test('syncRun keeps an agent blocked when CLI reports idle status but blocked state', async () => {
-  const { root, runner } = await setupSyncScenario({ status: 'running', claudeSessionId: '26386b61' }, [
-    { id: '26386b61', sessionId: '26386b61-31b4-4104-8a58-48b2e9c2b35d', status: 'idle', state: 'blocked', waitingFor: 'login required' },
-  ]);
+test('syncRun maps a runner blocked on login to blocked_login', async () => {
+  const { root, runner } = await setupSyncScenario(
+    { status: 'running' },
+    { state: 'blocked', blockReason: 'login', detail: 'OAuth session expired' },
+  );
 
-  const run = await syncRun(root, 'run-001', { runner });
+  const run = await syncRun(root, 'run-001', { runner, agentStatusOptions: runnerAlive });
   const agent = run.agents.find((entry) => entry.taskId === 'player-health');
 
   assert.equal(agent.status, 'blocked_login');
-  assert.equal(agent.blockedSource, 'session');
-  assert.equal(agent.claudeFullSessionId, '26386b61-31b4-4104-8a58-48b2e9c2b35d');
+  assert.equal(agent.error, 'OAuth session expired');
 });
 
-test('syncRun matches a stored full session uuid against the short agent id and audits when done', async () => {
+test('syncRun audits a finished runner and keeps its result and scope denials', async () => {
   const { root, runner } = await setupSyncScenario(
-    { status: 'running', claudeSessionId: '26386b61-31b4-4104-8a58-48b2e9c2b35d' },
-    [{ id: '26386b61', state: 'done' }],
+    { status: 'running' },
+    {
+      state: 'done',
+      result: { subtype: 'success', costUsd: 0.12, numTurns: 7 },
+      scopeDenials: [{ tool: 'Edit', path: 'src/enemy/enemy.gd' }],
+    },
   );
 
-  const run = await syncRun(root, 'run-001', { runner });
+  const run = await syncRun(root, 'run-001', { runner, agentStatusOptions: runnerAlive });
   const agent = run.agents.find((entry) => entry.taskId === 'player-health');
 
   assert.equal(agent.status, 'patch_ready');
-  assert.ok(agent.finishedAt);
+  assert.equal(agent.result.costUsd, 0.12);
+  assert.equal(agent.scopeDenials[0].path, 'src/enemy/enemy.gd');
 });
 
-test('syncRun resumes a session-blocked agent once the CLI reports it working again', async () => {
-  const { root, runner } = await setupSyncScenario(
-    { status: 'blocked_rate_limit', blockedSource: 'session', claudeSessionId: '26386b61', error: 'rate limited' },
-    [{ id: '26386b61', state: 'working' }],
-  );
+test('syncRun keeps a live runner running and marks a dead one session_missing', async () => {
+  const live = await setupSyncScenario({ status: 'running' }, { state: 'running' });
+  const liveRun = await syncRun(live.root, 'run-001', { runner: live.runner, agentStatusOptions: runnerAlive });
+  assert.equal(liveRun.agents.find((entry) => entry.taskId === 'player-health').status, 'running');
 
-  const run = await syncRun(root, 'run-001', { runner });
-  const agent = run.agents.find((entry) => entry.taskId === 'player-health');
-
-  assert.equal(agent.status, 'running');
-  assert.equal(agent.error, null);
+  const dead = await setupSyncScenario({ status: 'running' }, { state: 'running' });
+  const deadRun = await syncRun(dead.root, 'run-001', { runner: dead.runner, agentStatusOptions: runnerDead });
+  const agent = deadRun.agents.find((entry) => entry.taskId === 'player-health');
+  assert.equal(agent.status, 'session_missing');
+  assert.match(agent.error, /exited without reporting/);
 });
 
-test('syncRun leaves preflight-blocked agents alone', async () => {
-  const { root, runner } = await setupSyncScenario(
-    { status: 'blocked_login', blockedSource: 'preflight', claudeSessionId: '26386b61' },
-    [{ id: '26386b61', state: 'working' }],
-  );
-
-  const run = await syncRun(root, 'run-001', { runner });
+test('syncRun leaves agents that are not running alone', async () => {
+  const { root, runner } = await setupSyncScenario({ status: 'blocked_login' }, { state: 'done' });
+  const run = await syncRun(root, 'run-001', { runner, agentStatusOptions: runnerAlive });
   assert.equal(run.agents.find((entry) => entry.taskId === 'player-health').status, 'blocked_login');
-});
-
-test('syncRun surfaces unexpected agents output as lastSyncError', async () => {
-  const { root } = await setupSyncScenario({ status: 'running', claudeSessionId: '26386b61' }, []);
-  const runner = async () => ({ stdout: 'Usage: claude agents [options]', stderr: '' });
-
-  const run = await syncRun(root, 'run-001', { runner });
-  assert.match(run.lastSyncError, /not JSON/);
 });

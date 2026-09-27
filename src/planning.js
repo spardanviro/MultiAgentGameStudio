@@ -1,7 +1,7 @@
 const fs = require('node:fs/promises');
 const path = require('node:path');
 
-const { classifyAgentLifecycle, launchBackgroundAgent, readJobState } = require('./claudeAgents');
+const { classifyAgentStatus, launchAgentProcess, newSessionId, readAgentStatus } = require('./agentProcess');
 const { runCommand } = require('./multiAgent');
 const { DEFAULT_PROVIDER_ID, buildProviderEnvAsync, getProviderProfile } = require('./providerProfiles');
 
@@ -499,6 +499,7 @@ function toClientState(state) {
     permissionMode: state.permissionMode,
     effort: state.effort,
     claudeSessionId: state.claudeSessionId,
+    logPath: state.logPath || null,
     promptPath: state.promptPath,
     baseCommit: state.baseCommit,
     status: state.status,
@@ -508,20 +509,27 @@ function toClientState(state) {
   };
 }
 
-async function syncClaudeJobState(state) {
-  if (!state?.claudeSessionId || !['starting', 'running', 'blocked'].includes(state.status)) {
+// Runner phases map onto planning statuses; a vanished runner counts as failed.
+const PLANNING_STATUS_FOR_PHASE = {
+  running: 'running',
+  done: 'done',
+  failed: 'failed',
+  blocked: 'blocked',
+  lost: 'failed',
+};
+
+async function syncArchitectStatus(state, statusOptions = {}) {
+  if (!state?.agentDir || !['starting', 'running'].includes(state.status)) {
     return state;
   }
 
-  const jobState = await readJobState(state.claudeSessionId);
-  if (!jobState) {
-    return state;
-  }
-
-  // Lifecycle phases (blocked/done/failed/running) map 1:1 onto planning statuses.
-  const { phase, detail } = classifyAgentLifecycle(null, jobState);
-  if (phase !== 'unknown' && (phase !== state.status || detail !== state.error)) {
-    state.status = phase;
+  const { phase, detail } = classifyAgentStatus(await readAgentStatus(state.agentDir), {
+    ...statusOptions,
+    launchedPid: state.runnerPid,
+  });
+  const nextStatus = PLANNING_STATUS_FOR_PHASE[phase];
+  if (nextStatus && (nextStatus !== state.status || detail !== state.error)) {
+    state.status = nextStatus;
     state.error = detail;
     state.updatedAt = nowIso();
   }
@@ -625,33 +633,33 @@ async function startArchitectFromDesignDoc(options = {}) {
       options.providerProfileId || options.provider || DEFAULT_PROVIDER_ID,
       options.providerProfileOptions || {},
     );
-    const launch = await launchBackgroundAgent({
-      runner,
-      name: architectName,
-      cwd: projectRoot,
-      args: [
-        '--bg',
-        '--name',
-        architectName,
-        '--model',
-        model,
-        '--permission-mode',
-        permissionMode,
-        '--effort',
-        effort,
-        `Read and execute the MultiAgent planning prompt at ${relativePromptPath}.`,
-      ],
+    const sessionId = newSessionId();
+    const agentDir = path.join(getPlanningDir(projectRoot, runId), 'agent');
+    const launch = await (options.launchAgent || launchAgentProcess)({
+      dir: agentDir,
       env: await buildProviderEnvAsync(
         providerProfile,
         options.env || process.env,
         options.providerProfileOptions || {},
       ),
+      spec: {
+        name: architectName,
+        sessionId,
+        resume: false,
+        cwd: projectRoot,
+        prompt: `Read and execute the MultiAgent planning prompt at ${relativePromptPath}.`,
+        model,
+        effort,
+        permissionMode,
+        allowedPaths: null,
+      },
     });
-    state.claudeSessionId = launch.sessionId;
+    state.claudeSessionId = sessionId;
+    state.agentDir = agentDir;
+    state.logPath = launch.logPath;
+    state.runnerPid = launch.pid;
     state.status = 'running';
-    state.error = launch.sessionId
-      ? null
-      : `Claude started, but its session id could not be resolved (${launch.lookupError}).`;
+    state.error = null;
   } catch (error) {
     state.status = 'failed';
     state.error = `${error.message}${error.stderr ? `\n${error.stderr}` : ''}`;
@@ -666,12 +674,12 @@ async function startArchitectFromSpecDoc(options = {}) {
   return startArchitectFromDesignDoc(options);
 }
 
-async function loadPlanningState(projectRoot, runId) {
+async function loadPlanningState(projectRoot, runId, statusOptions = {}) {
   const statePath = getPlanningStatePath(projectRoot, runId);
   if (!(await fileExists(statePath))) {
     throw new Error(`Planning state not found: ${runId}`);
   }
-  const state = await syncClaudeJobState(JSON.parse(await fs.readFile(statePath, 'utf8')));
+  const state = await syncArchitectStatus(JSON.parse(await fs.readFile(statePath, 'utf8')), statusOptions);
   await writeJson(statePath, state);
   return toClientState(state);
 }
@@ -699,7 +707,7 @@ async function loadLatestPlanningState(projectRoot) {
   if (!states.length) {
     return null;
   }
-  const state = await syncClaudeJobState(JSON.parse(await fs.readFile(states[0].statePath, 'utf8')));
+  const state = await syncArchitectStatus(JSON.parse(await fs.readFile(states[0].statePath, 'utf8')));
   await writeJson(states[0].statePath, state);
   return toClientState(state);
 }

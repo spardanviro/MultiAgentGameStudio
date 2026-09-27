@@ -7,6 +7,7 @@ const yaml = require('js-yaml');
 
 const { getStatePath, initializeRun, loadState, startTask, validateManifest, waiveWorkflowGate } = require('../src/multiAgent');
 const { advanceWorkflowWithRework, importReworkManifest, startArchitectRework } = require('../src/reworkDispatch');
+const { createFakeLauncher, runnerAlive, writeRunnerStatus } = require('./helpers/fakeAgents');
 
 const BLOCKING_REVIEW = `# Module Review
 
@@ -54,7 +55,7 @@ function rawManifest(root, runId = 'run-001') {
   };
 }
 
-function makeRunner(claudeState) {
+function makeRunner() {
   const calls = [];
   const runner = async (command, args) => {
     calls.push({ command, args });
@@ -64,14 +65,8 @@ function makeRunner(claudeState) {
     if (command === 'git' && args[0] === 'rev-parse') {
       return { stdout: 'abc123\n', stderr: '' };
     }
-    if (command === 'claude' && args[0] === 'agents') {
-      return { stdout: JSON.stringify(claudeState.agents), stderr: '' };
-    }
     if (command === 'claude' && args[0] === 'auth') {
       return { stdout: '{"loggedIn":true,"authMethod":"claude.ai"}\n', stderr: '' };
-    }
-    if (command === 'claude') {
-      return { stdout: `backgrounded · ${claudeState.nextLaunchId} · agent\n`, stderr: '' };
     }
     return { stdout: '', stderr: '' };
   };
@@ -89,8 +84,9 @@ async function setupReviewedRun(reviewReport) {
     await fs.writeFile(path.join(root, 'reports', 'reviews', 'run-001', 'module_review.md'), reviewReport);
   }
 
-  const claudeState = { agents: [], nextLaunchId: 'abcd1234' };
-  const { runner, calls } = makeRunner(claudeState);
+  const { runner, calls } = makeRunner();
+  const fake = createFakeLauncher();
+  const opts = { runner, launchAgent: fake.launchAgent, agentStatusOptions: runnerAlive };
   const manifest = validateManifest(rawManifest(root), path.join(root, 'tasks', 'task_manifest.yaml'));
   await initializeRun(manifest, { runner });
 
@@ -102,72 +98,79 @@ async function setupReviewedRun(reviewReport) {
   state.workflow = { diagnostics: { afterModules: 'passed', afterIntegration: 'passed' } };
   await fs.writeFile(statePath, JSON.stringify(state, null, 2), 'utf8');
 
-  return { root, runner, calls, claudeState };
+  // Simulate what the rework architect's runner reports.
+  const setArchitect = async (runnerStatus) => {
+    const current = await loadState(root, 'run-001');
+    await writeRunnerStatus(current.workflow.rework.agentDir, runnerStatus);
+  };
+  return { root, opts, fake, calls, setArchitect };
 }
 
 test('a blocking module review closes the gate and keeps integration from starting', async () => {
-  const { root, runner } = await setupReviewedRun(BLOCKING_REVIEW);
+  const { root, opts } = await setupReviewedRun(BLOCKING_REVIEW);
 
-  const result = await advanceWorkflowWithRework(root, 'run-001', { runner });
+  const result = await advanceWorkflowWithRework(root, 'run-001', opts);
   assert.equal(result.stopReason, 'rework_required');
   assert.equal(result.reviewGates[0].outcome, 'rework_required');
   assert.equal(result.reviewGates[0].blockingItems[0].issue_id, 'MR-1');
 
-  const direct = await startTask(root, 'run-001', 'integration', { runner });
+  const direct = await startTask(root, 'run-001', 'integration', opts);
   const integration = direct.agents.find((agent) => agent.taskId === 'integration');
   assert.equal(integration.status, 'queued');
   assert.match(integration.error, /Blocked by review gate\(s\) module-review/);
 });
 
 test('a missing review report closes the gate instead of silently passing', async () => {
-  const { root, runner } = await setupReviewedRun(null);
-  const result = await advanceWorkflowWithRework(root, 'run-001', { runner });
+  const { root, opts } = await setupReviewedRun(null);
+  const result = await advanceWorkflowWithRework(root, 'run-001', opts);
   assert.equal(result.stopReason, 'rework_required');
   assert.equal(result.reviewGates[0].outcome, 'report_missing');
 });
 
 test('waiving the gate lets integration start', async () => {
-  const { root, runner } = await setupReviewedRun(BLOCKING_REVIEW);
-  await advanceWorkflowWithRework(root, 'run-001', { runner });
+  const { root, opts } = await setupReviewedRun(BLOCKING_REVIEW);
+  await advanceWorkflowWithRework(root, 'run-001', opts);
   await waiveWorkflowGate(root, 'run-001', 'module-review', 'accepted for now');
 
-  const result = await advanceWorkflowWithRework(root, 'run-001', { runner });
+  const result = await advanceWorkflowWithRework(root, 'run-001', opts);
   assert.equal(result.stopReason, 'agents_started');
   assert.equal(result.run.agents.find((agent) => agent.taskId === 'integration').status, 'running');
 });
 
 test('rework round: dispatch architect, wait, detect manifest, and import it as a linked run', async () => {
-  const { root, runner, calls, claudeState } = await setupReviewedRun(BLOCKING_REVIEW);
-  await advanceWorkflowWithRework(root, 'run-001', { runner });
+  const { root, opts, fake, setArchitect } = await setupReviewedRun(BLOCKING_REVIEW);
+  await advanceWorkflowWithRework(root, 'run-001', opts);
 
-  const dispatched = await startArchitectRework(root, 'run-001', { runner });
+  const dispatched = await startArchitectRework(root, 'run-001', opts);
   const rework = dispatched.workflow.rework;
   assert.equal(rework.status, 'running');
-  assert.equal(rework.claudeSessionId, 'abcd1234');
+  assert.equal(rework.claudeSessionId, fake.launches[0].spec.sessionId);
   assert.equal(rework.nextRunId, 'run-001-rework-1');
   assert.equal(rework.manifestPath, 'tasks/task_manifest.run-001-rework-1.yaml');
 
-  const launch = calls.find((call) => call.command === 'claude' && call.args[0] === '--bg');
-  assert.deepEqual(launch.args.slice(0, 9), [
-    '--bg', '--name', 'main-architect', '--model', 'opus', '--permission-mode', 'acceptEdits', '--effort', 'high',
-  ]);
+  const { spec } = fake.launches[0];
+  assert.equal(spec.name, 'main-architect');
+  assert.equal(spec.model, 'opus');
+  assert.equal(spec.effort, 'high');
+  assert.equal(spec.permissionMode, 'acceptEdits');
+  assert.equal(spec.cwd, root);
   const prompt = await fs.readFile(rework.promptPath, 'utf8');
   assert.match(prompt, /issue_id: MR-1/);
 
-  await assert.rejects(startArchitectRework(root, 'run-001', { runner }), /already running/);
+  await assert.rejects(startArchitectRework(root, 'run-001', opts), /already running/);
 
-  claudeState.agents = [{ id: 'abcd1234', name: 'main-architect', state: 'working' }];
-  let result = await advanceWorkflowWithRework(root, 'run-001', { runner });
+  await setArchitect({ state: 'running' });
+  let result = await advanceWorkflowWithRework(root, 'run-001', opts);
   assert.equal(result.stopReason, 'rework_in_progress');
 
   const next = rawManifest(root, 'run-001-rework-1');
   await fs.mkdir(path.join(root, 'tasks'), { recursive: true });
   await fs.writeFile(path.join(root, rework.manifestPath), yaml.dump(next), 'utf8');
-  claudeState.agents = [{ id: 'abcd1234', name: 'main-architect', state: 'done' }];
-  result = await advanceWorkflowWithRework(root, 'run-001', { runner });
+  await setArchitect({ state: 'done' });
+  result = await advanceWorkflowWithRework(root, 'run-001', opts);
   assert.equal(result.stopReason, 'rework_manifest_ready');
 
-  const nextRun = await importReworkManifest(root, 'run-001', { runner });
+  const nextRun = await importReworkManifest(root, 'run-001', opts);
   assert.equal(nextRun.runId, 'run-001-rework-1');
   assert.deepEqual(nextRun.reworkOf, {
     parentRunId: 'run-001',
@@ -178,47 +181,47 @@ test('rework round: dispatch architect, wait, detect manifest, and import it as 
 
   const parent = await loadState(root, 'run-001');
   assert.equal(parent.workflow.rework.status, 'imported');
-  result = await advanceWorkflowWithRework(root, 'run-001', { runner });
+  result = await advanceWorkflowWithRework(root, 'run-001', opts);
   assert.equal(result.stopReason, 'rework_imported');
 });
 
 test('a finished round without a manifest releases the hold so the user can waive', async () => {
-  const { root, runner, claudeState } = await setupReviewedRun(BLOCKING_REVIEW);
-  await startArchitectRework(root, 'run-001', { runner });
+  const { root, opts, setArchitect } = await setupReviewedRun(BLOCKING_REVIEW);
+  await startArchitectRework(root, 'run-001', opts);
 
-  claudeState.agents = [{ id: 'abcd1234', state: 'done' }];
-  const result = await advanceWorkflowWithRework(root, 'run-001', { runner });
+  await setArchitect({ state: 'done' });
+  const result = await advanceWorkflowWithRework(root, 'run-001', opts);
   assert.equal(result.stopReason, 'rework_required');
   assert.equal(result.run.workflow.rework.status, 'finished_without_manifest');
 });
 
 test('dispatch refuses when there is nothing to rework', async () => {
-  const { root, runner } = await setupReviewedRun('```yaml\nrework_items: []\n```\n');
-  await assert.rejects(startArchitectRework(root, 'run-001', { runner }), /Nothing to rework/);
+  const { root, opts } = await setupReviewedRun('```yaml\nrework_items: []\n```\n');
+  await assert.rejects(startArchitectRework(root, 'run-001', opts), /Nothing to rework/);
 });
 
 test('auto dispatch starts the architect once and never re-dispatches the same run', async () => {
-  const { root, runner, calls, claudeState } = await setupReviewedRun(BLOCKING_REVIEW);
+  const { root, opts, fake, setArchitect } = await setupReviewedRun(BLOCKING_REVIEW);
 
-  const first = await advanceWorkflowWithRework(root, 'run-001', { runner, autoDispatchRework: true });
+  const first = await advanceWorkflowWithRework(root, 'run-001', { ...opts, autoDispatchRework: true });
   assert.equal(first.stopReason, 'rework_dispatched');
   assert.equal(first.gateStopReason, 'rework_required');
 
-  claudeState.agents = [{ id: 'abcd1234', state: 'failed' }];
-  const second = await advanceWorkflowWithRework(root, 'run-001', { runner, autoDispatchRework: true });
+  await setArchitect({ state: 'failed', detail: 'boom' });
+  const second = await advanceWorkflowWithRework(root, 'run-001', { ...opts, autoDispatchRework: true });
   assert.equal(second.stopReason, 'rework_required');
   assert.equal(second.run.workflow.rework.status, 'failed');
-  assert.equal(calls.filter((call) => call.command === 'claude' && call.args[0] === '--bg').length, 1);
+  assert.equal(fake.launches.length, 1);
 });
 
 test('importing a rework manifest for another project root is refused', async () => {
-  const { root, runner, claudeState } = await setupReviewedRun(BLOCKING_REVIEW);
-  const dispatched = await startArchitectRework(root, 'run-001', { runner });
+  const { root, opts, setArchitect } = await setupReviewedRun(BLOCKING_REVIEW);
+  const dispatched = await startArchitectRework(root, 'run-001', opts);
   const foreign = rawManifest(path.join(os.tmpdir(), 'some-other-project'), 'run-001-rework-1');
   await fs.mkdir(path.join(root, 'tasks'), { recursive: true });
   await fs.writeFile(path.join(root, dispatched.workflow.rework.manifestPath), yaml.dump(foreign), 'utf8');
-  claudeState.agents = [{ id: 'abcd1234', state: 'done' }];
-  await advanceWorkflowWithRework(root, 'run-001', { runner });
+  await setArchitect({ state: 'done' });
+  await advanceWorkflowWithRework(root, 'run-001', opts);
 
-  await assert.rejects(importReworkManifest(root, 'run-001', { runner }), /does not match this project/);
+  await assert.rejects(importReworkManifest(root, 'run-001', opts), /does not match this project/);
 });

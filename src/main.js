@@ -129,61 +129,101 @@ function sendTerminalEvent(terminalId, type, payload = {}) {
   });
 }
 
-function startTerminalProcess({ mode, sessionId, cwd }) {
-  if (!sessionId) {
-    throw new Error('Claude session id is required.');
+const LOG_TAIL_POLL_MS = 1000;
+const LOG_TAIL_INITIAL_BYTES = 200000;
+const SESSION_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+// Only runner logs under a project's .multiagent folder may be tailed.
+function ensureAgentLogPath(logPath) {
+  const resolved = path.resolve(String(logPath || ''));
+  const inManagerDir = resolved.split(path.sep).includes('.multiagent');
+  if (!inManagerDir || path.basename(resolved) !== 'agent.log') {
+    throw new Error('Log path must be an agent.log inside a .multiagent folder.');
   }
+  return resolved;
+}
 
+async function readLogChunk(logPath, offset, maxBytes) {
+  let stat;
+  try {
+    stat = await fs.stat(logPath);
+  } catch (error) {
+    if (error.code === 'ENOENT') {
+      return { text: '', offset };
+    }
+    throw error;
+  }
+  if (stat.size <= offset) {
+    return { text: '', offset: stat.size < offset ? 0 : offset };
+  }
+  const start = Math.max(offset, stat.size - maxBytes);
+  const handle = await fs.open(logPath, 'r');
+  try {
+    const buffer = Buffer.alloc(stat.size - start);
+    await handle.read(buffer, 0, buffer.length, start);
+    return { text: buffer.toString('utf8'), offset: stat.size };
+  } finally {
+    await handle.close();
+  }
+}
+
+// Streams an agent runner's agent.log into the terminal drawer.
+function startLogTail({ logPath, cwd }) {
+  const resolved = ensureAgentLogPath(logPath);
   const terminalId = `term-${nextTerminalId++}`;
-  const args = mode === 'logs' ? ['logs', sessionId] : ['attach', sessionId];
-  const invocation = buildClaudeInvocation(args);
-  logEvent('terminal.start', {
-    mode,
-    sessionId,
-    cwd,
-    resolvedCommand: invocation.displayCommand,
-  });
-  const child = spawn(invocation.command, invocation.args, {
-    cwd,
-    shell: false,
-    windowsHide: true,
-  });
+  let offset = 0;
+  let stopped = false;
 
-  terminalProcesses.set(terminalId, child);
-  sendTerminalEvent(terminalId, 'start', {
-    command: invocation.displayCommand,
-    cwd,
+  const poll = async () => {
+    try {
+      const chunk = await readLogChunk(resolved, offset, LOG_TAIL_INITIAL_BYTES);
+      offset = chunk.offset;
+      if (chunk.text && !stopped) {
+        sendTerminalEvent(terminalId, 'data', { stream: 'stdout', text: chunk.text });
+      }
+    } catch (error) {
+      sendTerminalEvent(terminalId, 'error', { text: error.message });
+    }
+  };
+  const timer = setInterval(poll, LOG_TAIL_POLL_MS);
+  terminalProcesses.set(terminalId, {
+    stdin: { write: () => false },
+    kill: () => {
+      stopped = true;
+      clearInterval(timer);
+      sendTerminalEvent(terminalId, 'exit', { code: 0 });
+    },
   });
-
-  child.stdout.on('data', (chunk) => {
-    sendTerminalEvent(terminalId, 'data', { stream: 'stdout', text: chunk.toString() });
-  });
-
-  child.stderr.on('data', (chunk) => {
-    sendTerminalEvent(terminalId, 'data', { stream: 'stderr', text: chunk.toString() });
-  });
-
-  child.on('error', (error) => {
-    logEvent(
-      'terminal.error',
-      {
-        mode,
-        sessionId,
-        cwd,
-        error,
-      },
-      { level: 'error' },
-    );
-    sendTerminalEvent(terminalId, 'error', { text: error.message });
-  });
-
-  child.on('close', (code) => {
-    logEvent('terminal.exit', { mode, sessionId, cwd, code }, { level: code ? 'warn' : 'info' });
-    terminalProcesses.delete(terminalId);
-    sendTerminalEvent(terminalId, 'exit', { code });
-  });
-
+  sendTerminalEvent(terminalId, 'start', { command: `tail ${resolved}`, cwd });
+  poll();
   return { terminalId };
+}
+
+// Opens `claude --resume <session>` in a real terminal window so the user can
+// continue a finished or stopped agent session interactively.
+function openSessionInTerminal({ sessionId, cwd }) {
+  if (!SESSION_ID_PATTERN.test(String(sessionId || ''))) {
+    throw new Error('A Claude session UUID is required to continue a session.');
+  }
+  if (process.platform !== 'win32') {
+    throw new Error(`Run this in a terminal: cd "${cwd}" && claude --resume ${sessionId}`);
+  }
+  logEvent('terminal.openSession', { sessionId, cwd });
+  const child = spawn('cmd.exe', ['/c', 'start', '', 'cmd.exe', '/k', 'claude', '--resume', sessionId], {
+    cwd,
+    detached: true,
+    stdio: 'ignore',
+  });
+  child.unref();
+  return { terminalId: null, external: true };
+}
+
+function startTerminalProcess({ mode, sessionId, cwd, logPath }) {
+  logEvent('terminal.start', { mode, sessionId, cwd, logPath });
+  if (mode === 'logs') {
+    return startLogTail({ logPath, cwd });
+  }
+  return openSessionInTerminal({ sessionId, cwd });
 }
 
 function logPlanningFailure(label, payload) {

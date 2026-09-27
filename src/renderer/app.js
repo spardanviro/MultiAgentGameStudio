@@ -122,6 +122,23 @@ const statusLabels = {
   worktree_missing: 'Worktree Missing',
 };
 
+// Mirror RESUMABLE_STATUSES / STARTABLE_STATUSES in src/multiAgent.js.
+const RESUMABLE_AGENT_STATUSES = new Set([
+  'blocked_login',
+  'blocked_rate_limit',
+  'blocked_permission',
+  'blocked_dialog',
+  'session_missing',
+]);
+const STARTABLE_AGENT_STATUSES = new Set([
+  'ready',
+  'queued',
+  'failed',
+  'rejected',
+  'worktree_missing',
+  ...RESUMABLE_AGENT_STATUSES,
+]);
+
 // Auto advance keeps polling only while the workflow is progressing on its own.
 const AUTO_ADVANCE_CONTINUE_REASONS = new Set([
   'agents_started',
@@ -1024,7 +1041,7 @@ function renderPlanningInspector() {
       </dl>
       ${
         planning.claudeSessionId
-          ? '<div class="button-row"><button class="ghost-button compact" data-main-action="attach">Attach</button><button class="ghost-button compact" data-main-action="logs">Logs</button></div>'
+          ? '<div class="button-row"><button class="ghost-button compact" data-main-action="attach">Continue</button><button class="ghost-button compact" data-main-action="logs">Logs</button></div>'
           : ''
       }
     </section>
@@ -1074,7 +1091,7 @@ function renderMainInspector() {
       </dl>
       ${
         state.planning?.claudeSessionId
-          ? '<div class="button-row"><button class="ghost-button compact" data-main-action="attach">Attach</button><button class="ghost-button compact" data-main-action="logs">Logs</button></div>'
+          ? '<div class="button-row"><button class="ghost-button compact" data-main-action="attach">Continue</button><button class="ghost-button compact" data-main-action="logs">Logs</button></div>'
           : ''
       }
     </section>
@@ -1131,7 +1148,7 @@ function renderReworkRound(rework) {
     buttons.push('<button class="primary-button compact" data-rework-action="import">Import Rework Manifest</button>');
   }
   if (rework.claudeSessionId) {
-    buttons.push('<button class="ghost-button compact" data-rework-action="attach">Attach</button>');
+    buttons.push('<button class="ghost-button compact" data-rework-action="attach">Continue</button>');
     buttons.push('<button class="ghost-button compact" data-rework-action="logs">Logs</button>');
   }
   return `
@@ -1222,8 +1239,10 @@ async function waiveGate(gateId) {
 
 function renderAgentButtons(agent) {
   const buttons = [];
-  if (['ready', 'failed', 'rejected', 'session_missing', 'worktree_missing'].includes(agent.status)) {
-    const label = ['session_missing', 'worktree_missing'].includes(agent.status) ? 'Restart' : 'Start';
+  if (STARTABLE_AGENT_STATUSES.has(agent.status) && agent.status !== 'queued') {
+    const label = RESUMABLE_AGENT_STATUSES.has(agent.status) && agent.claudeSessionId
+      ? 'Resume'
+      : agent.status === 'worktree_missing' ? 'Restart' : 'Start';
     buttons.push(`<button class="primary-button compact" data-action="start">${label}</button>`);
   }
   if (agent.status === 'done') {
@@ -1234,7 +1253,7 @@ function renderAgentButtons(agent) {
     buttons.push('<button class="ghost-button compact" data-action="reject">Reject</button>');
   }
   if (agent.claudeSessionId) {
-    buttons.push('<button class="ghost-button compact" data-action="attach">Attach</button>');
+    buttons.push('<button class="ghost-button compact" data-action="attach">Continue</button>');
     buttons.push('<button class="ghost-button compact" data-action="logs">Logs</button>');
   }
   return buttons.join('');
@@ -1700,51 +1719,68 @@ async function cleanAcceptedWorktrees() {
   });
 }
 
+const ACTIVE_SESSION_STATUSES = new Set(['starting', 'running']);
+
+// Logs streams the runner's agent.log into the drawer. Continue opens
+// `claude --resume` in a system terminal, only once the runner has stopped.
+async function openAgentTerminal({ mode, title, sessionId, cwd, logPath, status }) {
+  if (mode === 'attach' && ACTIVE_SESSION_STATUSES.has(status)) {
+    setStatus('The session is still running. Use Logs now, or Continue after it stops.');
+    return;
+  }
+  try {
+    const result = await api.terminal.start({ mode, sessionId, cwd, logPath });
+    if (!result.terminalId) {
+      setStatus(`Opened session ${sessionId} in a terminal window`);
+      return;
+    }
+    elements.terminalDrawer.classList.remove('collapsed');
+    elements.terminalOutput.textContent = '';
+    elements.terminalTitle.textContent = `${title} / ${mode}`;
+    state.terminalId = result.terminalId;
+    elements.sendTerminalButton.disabled = true;
+    elements.stopTerminalButton.disabled = false;
+  } catch (error) {
+    setStatus(error.message);
+  }
+}
+
 async function startTerminal(mode) {
   const agent = getSelectedAgent();
   if (!agent?.claudeSessionId) return;
-  elements.terminalDrawer.classList.remove('collapsed');
-  elements.terminalOutput.textContent = '';
-  elements.terminalTitle.textContent = `${agent.displayName} / ${mode}`;
-  const result = await api.terminal.start({
+  await openAgentTerminal({
     mode,
+    title: agent.displayName,
     sessionId: agent.claudeSessionId,
     cwd: agent.worktreePath || state.run.projectRoot,
+    logPath: agent.logPath,
+    status: agent.status,
   });
-  state.terminalId = result.terminalId;
-  elements.sendTerminalButton.disabled = false;
-  elements.stopTerminalButton.disabled = false;
 }
 
 async function startPlanningTerminal(mode) {
   if (!state.planning?.claudeSessionId) return;
-  elements.terminalDrawer.classList.remove('collapsed');
-  elements.terminalOutput.textContent = '';
-  elements.terminalTitle.textContent = `${state.planning.architectName} / ${mode}`;
-  const result = await api.terminal.start({
+  await openAgentTerminal({
     mode,
+    title: state.planning.architectName,
     sessionId: state.planning.claudeSessionId,
     cwd: state.planning.projectRoot || state.project?.path,
+    logPath: state.planning.logPath,
+    status: state.planning.status,
   });
-  state.terminalId = result.terminalId;
-  elements.sendTerminalButton.disabled = false;
-  elements.stopTerminalButton.disabled = false;
 }
 
 async function startReworkTerminal(mode) {
   const rework = state.run?.workflow?.rework;
   if (!rework?.claudeSessionId) return;
-  elements.terminalDrawer.classList.remove('collapsed');
-  elements.terminalOutput.textContent = '';
-  elements.terminalTitle.textContent = `${state.run.manifest.mainAgent.name} rework ${rework.round} / ${mode}`;
-  const result = await api.terminal.start({
+  await openAgentTerminal({
     mode,
+    title: `${state.run.manifest.mainAgent.name} rework ${rework.round}`,
     sessionId: rework.claudeSessionId,
     cwd: state.run.projectRoot,
+    logPath: rework.logPath,
+    status: rework.status,
   });
-  state.terminalId = result.terminalId;
-  elements.sendTerminalButton.disabled = false;
-  elements.stopTerminalButton.disabled = false;
 }
 
 async function sendTerminalInput() {

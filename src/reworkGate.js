@@ -8,7 +8,7 @@
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const yaml = require('js-yaml');
-const { classifyAgentLifecycle, findAgent, readJobState } = require('./claudeAgents');
+const { classifyAgentStatus, readAgentStatus } = require('./agentProcess');
 
 const REVIEW_ROLES = new Set(['module_review', 'system_review']);
 const BLOCKING_SEVERITIES = new Set(['critical', 'blocker']);
@@ -257,22 +257,23 @@ function isReworkHoldingRun(state) {
 }
 
 /**
- * Update the rework architect's status from the Claude agents list / job file.
+ * Update the rework architect's status from its runner status file.
  * When the session finishes, the outcome depends on which files it produced.
  * Mutates state; caller saves.
  */
-async function syncReworkArchitect(state, claudeAgents) {
+async function syncReworkArchitect(state, statusOptions = {}) {
   const rework = state.workflow?.rework;
-  if (!rework?.claudeSessionId || !isReworkActive(state)) {
+  if (!rework?.agentDir || !isReworkActive(state)) {
     return;
   }
-  const record = findAgent(claudeAgents, rework.claudeSessionId);
-  const jobState = await readJobState(rework.claudeSessionId);
-  const lifecycle = classifyAgentLifecycle(record, jobState);
+  const lifecycle = classifyAgentStatus(await readAgentStatus(rework.agentDir), {
+    ...statusOptions,
+    launchedPid: rework.runnerPid,
+  });
   rework.lastSyncAt = nowIso();
 
-  if (lifecycle.phase === 'blocked' || lifecycle.phase === 'failed') {
-    rework.status = lifecycle.phase;
+  if (lifecycle.phase === 'blocked' || lifecycle.phase === 'failed' || lifecycle.phase === 'lost') {
+    rework.status = lifecycle.phase === 'blocked' ? 'blocked' : 'failed';
     rework.error = lifecycle.detail;
   } else if (lifecycle.phase === 'running') {
     rework.status = 'running';

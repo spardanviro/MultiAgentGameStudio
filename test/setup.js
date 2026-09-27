@@ -14,3 +14,6 @@ if (!process.env[APP_DATA_DIR_ENV]) {
 if (!process.env.CLAUDE_CONFIG_DIR) {
   process.env.CLAUDE_CONFIG_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'multiagent-claude-config-'));
 }
+
+// Tests must inject a fake launcher; never start real agent runner processes.
+process.env.MULTIAGENT_MANAGER_NO_AGENT_SPAWN = '1';

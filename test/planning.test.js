@@ -14,6 +14,7 @@ const {
   loadPlanningState,
   startArchitectFromDesignDoc,
 } = require('../src/planning');
+const { createFakeLauncher, runnerAlive, writeRunnerStatus } = require('./helpers/fakeAgents');
 
 test('buildArchitectPrompt treats input as completed spec and includes manifest requirements', () => {
   const prompt = buildArchitectPrompt({
@@ -64,7 +65,7 @@ test('buildArchitectPrompt treats input as completed spec and includes manifest 
   assert.match(prompt, /Do not rewrite the design/);
 });
 
-test('startArchitectFromDesignDoc accepts spec doc path, writes prompt file, and starts fake Claude', async () => {
+test('startArchitectFromDesignDoc accepts spec doc path, writes prompt file, and launches the architect runner', async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'planning-test-'));
   const specDocPath = path.join(root, 'spec.md');
   await fs.writeFile(specDocPath, '# Game Spec\nBuild a small arena game.\n', 'utf8');
@@ -78,14 +79,9 @@ test('startArchitectFromDesignDoc accepts spec doc path, writes prompt file, and
     if (command === 'git' && args[0] === 'rev-parse' && args[1] === 'HEAD') {
       return { stdout: 'abc123456789\n', stderr: '' };
     }
-    if (command === 'claude') {
-      return {
-        stdout: 'Started background session 11111111-2222-3333-4444-555555555555\n',
-        stderr: '',
-      };
-    }
     throw new Error(`Unexpected command ${command}`);
   };
+  const fake = createFakeLauncher();
 
   const state = await startArchitectFromDesignDoc({
     projectRoot: root,
@@ -94,23 +90,27 @@ test('startArchitectFromDesignDoc accepts spec doc path, writes prompt file, and
     architectName: 'main-architect',
     model: 'opus',
     runner,
+    launchAgent: fake.launchAgent,
   });
 
   const promptPath = getArchitectPromptPath(root, 'run-001');
   const statePath = getPlanningStatePath(root, 'run-001');
   const prompt = await fs.readFile(promptPath, 'utf8');
   const savedState = JSON.parse(await fs.readFile(statePath, 'utf8'));
-  const claudeCall = calls.find((call) => call.command === 'claude');
+  const [launch] = fake.launches;
 
   assert.equal(state.status, 'running');
-  assert.equal(state.claudeSessionId, '11111111-2222-3333-4444-555555555555');
+  assert.equal(state.claudeSessionId, launch.spec.sessionId);
+  assert.equal(state.logPath, path.join(launch.dir, 'agent.log'));
   assert.equal(state.specDocPath, specDocPath);
   assert.equal(savedState.baseCommit, 'abc123456789');
   assert.match(prompt, /Build a small arena game/);
   assert.doesNotMatch(prompt, /turn the user's design document into/);
-  assert.ok(claudeCall.args.includes('--bg'));
-  assert.ok(claudeCall.args.includes('main-architect'));
-  assert.match(claudeCall.args.at(-1), /\.multiagent\/planning\/run-001\/architect_prompt\.md/);
+  assert.equal(launch.spec.name, 'main-architect');
+  assert.equal(launch.spec.cwd, root);
+  assert.equal(launch.spec.allowedPaths, null);
+  assert.match(launch.spec.prompt, /\.multiagent\/planning\/run-001\/architect_prompt\.md/);
+  assert.ok(!calls.some((call) => call.command === 'claude'));
 });
 
 test('startArchitectFromDesignDoc returns failed state for non-git project', async () => {
@@ -228,13 +228,10 @@ test('loadLatestPlanningState returns newest planning state', async () => {
   assert.equal(latest.runId, 'run-new');
 });
 
-test('loadPlanningState surfaces blocked Claude background job needs', async () => {
+test('loadPlanningState surfaces a runner blocked on login', async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'planning-blocked-'));
-  const fakeHome = await fs.mkdtemp(path.join(os.tmpdir(), 'planning-home-'));
-  const previousConfigDir = process.env.CLAUDE_CONFIG_DIR;
-  process.env.CLAUDE_CONFIG_DIR = path.join(fakeHome, '.claude');
-
-  try {
+  const agentDir = path.join(root, '.multiagent', 'planning', 'run-blocked', 'agent');
+  {
     const statePath = getPlanningStatePath(root, 'run-blocked');
     await fs.mkdir(path.dirname(statePath), { recursive: true });
     await fs.writeFile(
@@ -249,7 +246,8 @@ test('loadPlanningState surfaces blocked Claude background job needs', async () 
           model: 'opus',
           permissionMode: 'acceptEdits',
           effort: 'medium',
-          claudeSessionId: '1234abcd',
+          claudeSessionId: '11111111-2222-4333-8444-555555555555',
+          agentDir,
           promptPath: path.join(root, '.multiagent', 'planning', 'run-blocked', 'architect_prompt.md'),
           baseCommit: 'abc123',
           status: 'running',
@@ -263,22 +261,27 @@ test('loadPlanningState surfaces blocked Claude background job needs', async () 
       'utf8',
     );
 
-    const jobStatePath = path.join(fakeHome, '.claude', 'jobs', '1234abcd', 'state.json');
-    await fs.mkdir(path.dirname(jobStatePath), { recursive: true });
-    await fs.writeFile(
-      jobStatePath,
-      `${JSON.stringify({ state: 'blocked', needs: 'login required - run /login' }, null, 2)}\n`,
-      'utf8',
-    );
+    await writeRunnerStatus(agentDir, { state: 'blocked', blockReason: 'login', detail: 'login required - run /login' });
 
-    const state = await loadPlanningState(root, 'run-blocked');
+    const state = await loadPlanningState(root, 'run-blocked', runnerAlive);
     assert.equal(state.status, 'blocked');
     assert.equal(state.error, 'login required - run /login');
-  } finally {
-    if (previousConfigDir === undefined) {
-      delete process.env.CLAUDE_CONFIG_DIR;
-    } else {
-      process.env.CLAUDE_CONFIG_DIR = previousConfigDir;
-    }
   }
+});
+
+test('loadPlanningState marks the architect done when its runner finishes', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'planning-done-'));
+  const agentDir = path.join(root, '.multiagent', 'planning', 'run-done', 'agent');
+  const statePath = getPlanningStatePath(root, 'run-done');
+  await fs.mkdir(path.dirname(statePath), { recursive: true });
+  await fs.writeFile(
+    statePath,
+    JSON.stringify({ version: 1, runId: 'run-done', projectRoot: root, agentDir, status: 'running', error: null }),
+    'utf8',
+  );
+  await writeRunnerStatus(agentDir, { state: 'done' });
+
+  const state = await loadPlanningState(root, 'run-done', runnerAlive);
+  assert.equal(state.status, 'done');
+  assert.equal(state.error, null);
 });

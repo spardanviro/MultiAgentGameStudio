@@ -3,7 +3,7 @@
 // run linked to the current one.
 const fs = require('node:fs/promises');
 const path = require('node:path');
-const { launchBackgroundAgent } = require('./claudeAgents');
+const { launchAgentProcess, newSessionId } = require('./agentProcess');
 const { buildProviderEnvAsync, getProviderProfile } = require('./providerProfiles');
 const multiAgent = require('./multiAgent');
 const {
@@ -87,7 +87,6 @@ async function collectReworkTriggers(state) {
  * into a rework manifest for the next run.
  */
 async function startArchitectRework(projectRoot, runId, options = {}) {
-  const runner = options.runner || multiAgent.runCommand;
   const state = await multiAgent.loadState(projectRoot, runId);
   const previous = state.workflow?.rework;
   if (previous && (isReworkActive(state) || NON_RESTARTABLE_REWORK_STATUSES.has(previous.status))) {
@@ -134,27 +133,28 @@ async function startArchitectRework(projectRoot, runId, options = {}) {
   const rework = state.workflow.rework;
   try {
     const providerProfile = await getProviderProfile(mainAgent.provider, options.providerProfileOptions || {});
-    const launch = await launchBackgroundAgent({
-      runner,
-      name: mainAgent.name,
-      cwd: projectRoot,
-      args: [
-        '--bg',
-        '--name',
-        mainAgent.name,
-        '--model',
-        mainAgent.model,
-        '--permission-mode',
-        state.manifest.defaults.permissionMode,
-        '--effort',
-        mainAgent.effort,
-        `Read and execute the MultiAgent rework prompt at ${toPosixRelative(projectRoot, promptPath)}.`,
-      ],
+    const sessionId = newSessionId();
+    const agentDir = path.join(path.dirname(promptPath), `${lineage.nextRunId}_agent`);
+    const launch = await (options.launchAgent || launchAgentProcess)({
+      dir: agentDir,
       env: await buildProviderEnvAsync(providerProfile, options.env || process.env, options.providerProfileOptions || {}),
+      spec: {
+        name: mainAgent.name,
+        sessionId,
+        resume: false,
+        cwd: projectRoot,
+        prompt: `Read and execute the MultiAgent rework prompt at ${toPosixRelative(projectRoot, promptPath)}.`,
+        model: mainAgent.model,
+        effort: mainAgent.effort,
+        permissionMode: state.manifest.defaults.permissionMode,
+        allowedPaths: null,
+      },
     });
-    rework.claudeSessionId = launch.sessionId;
-    rework.status = launch.sessionId ? 'running' : 'failed';
-    rework.error = launch.sessionId ? null : `Rework architect started, but its session id could not be resolved (${launch.lookupError}).`;
+    rework.claudeSessionId = sessionId;
+    rework.agentDir = agentDir;
+    rework.logPath = launch.logPath;
+    rework.runnerPid = launch.pid;
+    rework.status = 'running';
   } catch (error) {
     rework.status = 'failed';
     rework.error = `${error.message}${error.stderr ? `\n${error.stderr}` : ''}`;

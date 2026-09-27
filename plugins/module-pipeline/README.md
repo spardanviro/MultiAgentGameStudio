@@ -1,5 +1,8 @@
 # module-pipeline
 
+The full guide (walkthrough, manifest reference, statuses, troubleshooting) is
+in the [repository README](../../README.md).
+
 A Claude Code plugin that runs a spec-driven, multi-agent build:
 
 1. **`/module-pipeline:plan <spec> [run-id]`**: the current session acts as the

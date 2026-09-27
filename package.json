@@ -1,28 +1,10 @@
 {
-  "name": "claude-multi-agent-manager",
+  "name": "multiagent-system",
   "version": "0.1.0",
-  "description": "A local Electron manager for Claude Code project sessions.",
-  "main": "src/main.js",
+  "private": true,
+  "description": "Marketplace repository for the module-pipeline Claude Code plugin.",
   "scripts": {
-    "start": "electron .",
-    "dev": "electron .",
-    "test": "npm run test:app && npm run test:plugin",
-    "test:app": "node --import ./test/setup.js --test \"test/**/*.test.js\"",
-    "test:plugin": "node --test \"plugins/module-pipeline/test/*.test.mjs\""
+    "test": "node --test \"plugins/module-pipeline/test/*.test.mjs\""
   },
-  "keywords": [
-    "claude",
-    "claude-code",
-    "electron",
-    "sessions"
-  ],
-  "author": "",
-  "license": "MIT",
-  "devDependencies": {
-    "electron": "^39.2.7"
-  },
-  "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.3.283",
-    "js-yaml": "^4.2.0"
-  }
+  "license": "MIT"
 }

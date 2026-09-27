@@ -935,3 +935,12 @@ test('syncRun leaves agents that are not running alone', async () => {
   const run = await syncRun(root, 'run-001', { runner, agentStatusOptions: runnerAlive });
   assert.equal(run.agents.find((entry) => entry.taskId === 'player-health').status, 'blocked_login');
 });
+
+test('syncRun marks agents started by the old claude --bg flow as session_missing', async () => {
+  const { root, runner } = await setupSyncScenario({ status: 'running', agentDir: undefined, claudeSessionId: '26386b61' }, null);
+  const run = await syncRun(root, 'run-001', { runner, agentStatusOptions: runnerAlive });
+  const agent = run.agents.find((entry) => entry.taskId === 'player-health');
+  assert.equal(agent.status, 'session_missing');
+  assert.equal(agent.claudeSessionId, null);
+  assert.match(agent.error, /older manager version/);
+});

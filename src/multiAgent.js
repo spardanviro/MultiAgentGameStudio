@@ -1528,6 +1528,13 @@ async function auditTask(projectRoot, runId, taskId, options = {}) {
 }
 
 async function syncAgentFromRunner(state, agent, options = {}) {
+  if (!agent.agentDir) {
+    // Started by a version that used `claude --bg`; there is no runner to read.
+    agent.status = 'session_missing';
+    agent.error = 'This agent was started by an older manager version (claude --bg) and cannot be tracked. Restart it.';
+    agent.claudeSessionId = null;
+    return;
+  }
   const status = await readAgentStatus(agent.agentDir);
   const lifecycle = classifyAgentStatus(status, {
     ...(options.agentStatusOptions || {}),
@@ -1563,7 +1570,7 @@ async function syncRun(projectRoot, runId, options = {}) {
 
   try {
     for (const agent of Object.values(state.agents)) {
-      if (ACTIVE_AGENT_STATUSES.has(agent.status) && agent.agentDir) {
+      if (ACTIVE_AGENT_STATUSES.has(agent.status)) {
         await syncAgentFromRunner(state, agent, options);
       }
     }

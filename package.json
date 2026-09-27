@@ -6,7 +6,9 @@
   "scripts": {
     "start": "electron .",
     "dev": "electron .",
-    "test": "node --import ./test/setup.js --test \"test/**/*.test.js\""
+    "test": "npm run test:app && npm run test:plugin",
+    "test:app": "node --import ./test/setup.js --test \"test/**/*.test.js\"",
+    "test:plugin": "node --test \"plugins/module-pipeline/test/*.test.mjs\""
   },
   "keywords": [
     "claude",

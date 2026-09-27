@@ -1,0 +1,15 @@
+{
+  "name": "multiagent-system",
+  "description": "Local marketplace for the module-pipeline plugin.",
+  "owner": {
+    "name": "Nero"
+  },
+  "plugins": [
+    {
+      "name": "module-pipeline",
+      "description": "Spec-driven multi-agent pipeline with folder ownership, enforced write scopes, per-run branches, and review gates.",
+      "source": "./plugins/module-pipeline",
+      "category": "development"
+    }
+  ]
+}

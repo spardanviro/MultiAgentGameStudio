@@ -52,7 +52,7 @@ agents; other sessions and agents are never affected.
 ## Install from this repository
 
 ```
-/plugin marketplace add C:/Users/Nero/Desktop/MultiAgentSystem
+/plugin marketplace add spardanviro/MultiAgentGameStudio
 /plugin install module-pipeline@multiagent-system
 ```
 

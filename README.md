@@ -1,6 +1,6 @@
-# MultiAgentSystem
+# MultiAgentGameStudio
 
-A local Claude Code plugin marketplace containing one plugin:
+A Claude Code plugin marketplace containing one plugin:
 [**module-pipeline**](plugins/module-pipeline/README.md), a spec-driven multi-agent build pipeline.
 A Main Architect splits a spec into module folders with one owner each; module agents implement
 them in parallel isolated worktrees under enforced write scopes; every accepted module is committed
@@ -11,7 +11,7 @@ on a per-run branch; reviewers gate each stage; rework runs close the loop.
 In Claude Code:
 
 ```
-/plugin marketplace add C:/Users/Nero/Desktop/MultiAgentSystem
+/plugin marketplace add spardanviro/MultiAgentGameStudio
 /plugin install module-pipeline@multiagent-system
 ```
 
@@ -34,4 +34,11 @@ npm test
 
 The plugin has no runtime dependencies (js-yaml is vendored), so no install step is needed.
 
-The earlier Electron manager app lives in the git history up to commit `31a2875`.
+## Status
+
+Covered by unit and workflow-harness tests; not yet exercised end to end in a real Claude Code
+session. The earlier Electron manager app lives in the git history up to commit `31a2875`.
+
+## License
+
+MIT

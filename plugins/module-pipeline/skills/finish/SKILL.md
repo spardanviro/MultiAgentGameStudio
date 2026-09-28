@@ -4,6 +4,8 @@ description: Wrap up a module-pipeline run - summarize the run branch against th
 argument-hint: "<run-id> [base-branch]"
 arguments: [run, base]
 disable-model-invocation: true
+model: opus
+effort: medium
 ---
 
 # Finish run $run

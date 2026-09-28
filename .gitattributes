@@ -1,0 +1,3 @@
+# Keep LF everywhere. Claude Code refuses to start workflow scripts that contain
+# carriage returns, and Git for Windows would otherwise check them out as CRLF.
+* text=auto eol=lf

@@ -65,11 +65,11 @@ Roles differ only in thinking effort, set per role in the manifest:
 ```yaml
 effort:
   preset: balanced          # economy | balanced | quality
-  module_implementer: high
-  module_reviewer: high
-  integrator: high
-  system_reviewer: xhigh
-  pipeline_ops: low
+  module_implementer: medium
+  module_reviewer: medium
+  integrator: medium
+  system_reviewer: high
+  pipeline_ops: medium
 ```
 
 A module's own `effort` overrides `module_implementer` for that module. See

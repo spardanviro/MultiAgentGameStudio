@@ -24,9 +24,10 @@ const CLI = `node "${pluginRoot}/scripts/pipeline.mjs"`
 const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max']
 
 // Every agent runs on the strongest model; roles differ only in thinking
-// effort. Until prepare returns the manifest's settings, ops runs at low.
+// effort. Until prepare returns the manifest's settings, ops runs at the default
+// pipeline_ops effort (medium).
 let model = 'opus'
-let opsEffort = 'low'
+let opsEffort = 'medium'
 
 const OPS_SCHEMA = {
   type: 'object',
@@ -165,7 +166,9 @@ ${bullets(task.acceptance)}`,
     },
   )
   integration = await ops(`${CLI} integrate-task --run ${plan.runId} --task integration`, 'merge:integration', 'Merge')
-  if (integration.status !== 'merged') {
+  // 'empty' means the existing glue already fits (common in rework runs); the
+  // system review below still checks the whole result.
+  if (integration.status !== 'merged' && integration.status !== 'empty') {
     return {
       stage: 'integration',
       runId: plan.runId,

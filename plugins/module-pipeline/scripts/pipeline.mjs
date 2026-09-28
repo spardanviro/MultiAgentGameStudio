@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-// module-pipeline CLI. Every command prints one JSON object on stdout.
+// module-pipeline CLI. Every command prints one JSON object on stdout, on one
+// line (add --pretty to indent it).
 //
 //   validate <manifest>                       check a manifest, plan waves, count agents per role and effort
 //   commit-planning <manifest>                commit the architect's output on the run branch
@@ -30,6 +31,7 @@ import {
   ensureRunBranchExists,
   getRunBranchName,
   git,
+  gitIdentityProblem,
   head,
   isMainCheckoutOn,
   listBranches,
@@ -148,6 +150,32 @@ function loadOrInitState(manifest) {
   };
 }
 
+/**
+ * Problems that would break a workflow run before any agent starts. prepare
+ * runs in the Claude Code session's directory, and Claude Code creates agent
+ * worktrees from that directory's repository, so it must be the project.
+ */
+function sessionProblems(root) {
+  const problems = [];
+  let sessionRoot = null;
+  try {
+    sessionRoot = projectTopLevel(process.cwd());
+  } catch {
+    sessionRoot = null;
+  }
+  if (!sessionRoot || !samePath(sessionRoot, root)) {
+    problems.push(
+      `The Claude Code session is in ${process.cwd()}, not in the project ${root}. Agent worktrees are created from the ` +
+        `session's repository, so move the session into ${root} (and keep it there) before running the pipeline.`,
+    );
+  }
+  const identity = gitIdentityProblem(root);
+  if (identity) {
+    problems.push(identity);
+  }
+  return problems;
+}
+
 function detectBaseBranch(root, requested) {
   if (requested) {
     if (!branchTip(root, requested)) {
@@ -186,6 +214,10 @@ function cmdCommitPlanning({ positional }) {
   const manifest = requireManifestArg(positional);
   ensureProjectRepo(manifest);
   const root = manifest.projectRoot;
+  const identity = gitIdentityProblem(root);
+  if (identity) {
+    return { ok: false, errors: [identity] };
+  }
   ensureExcluded(root);
   const branch = ensureRunBranch(root, getRunBranchName(manifest.runId));
   const files = listUncommitted(root);
@@ -203,7 +235,7 @@ function cmdPrepare({ positional, flags }) {
   ensureExcluded(root);
 
   const runBranch = getRunBranchName(manifest.runId);
-  const errors = findMissingPromptFiles(manifest);
+  const errors = [...sessionProblems(root), ...findMissingPromptFiles(manifest)];
   // Agents start from the run branch tip. Uncommitted work matters only while
   // the main checkout is on that branch (it is then likely planning output);
   // on any other branch it is the user's own work and is left alone.
@@ -491,7 +523,7 @@ function cleanMergeWorktrees(root, matches, dryRun) {
     .map((runId) => {
       const worktree = path.join(dir, runId);
       if (!dryRun) {
-        git(root, ['worktree', 'remove', '--force', worktree], { allowFail: true });
+        git(root, ['worktree', 'remove', '--force', '--force', worktree], { allowFail: true });
         fs.rmSync(worktree, { recursive: true, force: true });
       }
       return { runId, worktree };
@@ -656,6 +688,9 @@ export function main(argv) {
 const invokedDirectly = process.argv[1] && samePath(process.argv[1], fileURLToPath(import.meta.url));
 if (invokedDirectly) {
   const { code, result } = main(process.argv.slice(2));
-  process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+  // Compact by default: the pipeline-ops agent relays stdout verbatim, and
+  // every byte it copies costs time. --pretty indents for humans.
+  const pretty = process.argv.includes('--pretty');
+  process.stdout.write(`${JSON.stringify(result, null, pretty ? 2 : undefined)}\n`);
   process.exitCode = code;
 }

@@ -3,6 +3,8 @@ name: clean
 description: Remove module-pipeline leftovers - worktrees kept for inspection, stale worktree claims, merge worktrees, and (optionally) run branches already merged into the main branch.
 argument-hint: "[run-id] [--branches]"
 disable-model-invocation: true
+model: opus
+effort: medium
 ---
 
 # Clean up after pipeline runs

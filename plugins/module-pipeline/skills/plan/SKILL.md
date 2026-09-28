@@ -4,6 +4,8 @@ description: Act as the Main Architect - turn a finished implementation spec int
 argument-hint: "<spec-path> [run-id]"
 arguments: [spec, run]
 disable-model-invocation: true
+model: opus
+effort: high
 ---
 
 # Main Architect: plan the modules
@@ -25,7 +27,11 @@ glue. Keep your own reading of the existing code to what planning needs.
 ## Steps
 
 1. **Read** the spec and look at the project layout, engine or framework,
-   build tooling, and any existing code conventions.
+   build tooling, and any existing code conventions. The session must be at
+   the root of the project's git repository (agent worktrees are created from
+   it), with at least one commit and `user.name`/`user.email` configured. If
+   any of that is missing, tell the user and ask before running `git init`,
+   making a first commit or setting an identity.
 2. **Design the module map.** Split the work into modules, each owning one
    folder:
    - One cohesive feature per folder that one agent can finish in one session:
@@ -44,7 +50,16 @@ glue. Keep your own reading of the existing code to what planning needs.
      integration seams.
    - `docs/module_contracts.md`: for every module, its public API, signals or
      events, data inputs and outputs, and forbidden dependencies. This is what
-     agents and reviewers hold each other to, so make it precise.
+     agents and reviewers hold each other to, so make it precise. Copy exact
+     values from the spec (numbers, colors, strings) instead of paraphrasing
+     them: a contract that says "gold outline" where the spec says `#f1c232`
+     lets the implementer pick another gold and the reviewer catch it only at
+     the end.
+   - Keep every tuning value in one data module and have the other modules
+     read it from there, including for presentation. In the contracts, ask
+     that tests of behavior take their numbers from the data module; only
+     the data module's own tests pin the spec values. Otherwise one balance
+     change forces a rework of every module whose tests restate the number.
    - If the spec is outside the repository, copy it to `docs/spec.md`; agents
      work in worktrees and only see files committed in the repo.
 4. **Scaffold** every module folder (and test folder) with stub files for the
@@ -67,7 +82,8 @@ glue. Keep your own reading of the existing code to what planning needs.
      Godot use `["*.uid", "*.import", ".godot/"]`; for Unity
      `["*.meta", "Library/", "Temp/", "Logs/"]`. Leave it out when nothing
      applies.
-   - `effort.preset` to `balanced` unless the user asked for something
+   - `effort.preset` to `balanced` (module agents, reviewers and ops at
+     medium, the system reviewer at high) unless the user asked for something
      cheaper (`economy`) or more thorough (`quality`). Every agent runs on the
      strongest model; never write a `model` field. Give a module its own
      `effort` only when it is clearly harder (or much simpler) than the rest.

@@ -4,6 +4,8 @@ description: Show module-pipeline runs in this project - task outcomes, diagnost
 argument-hint: "[run-id]"
 arguments: [run]
 disable-model-invocation: true
+model: opus
+effort: medium
 ---
 
 Run (add `--run $run` if a run id was given):

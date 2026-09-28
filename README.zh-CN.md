@@ -9,8 +9,9 @@ git 提交，每个阶段都有审查把关，失败的部分会进入有计划�
 本仓库是一个 Claude Code 插件市场（marketplace），里面只有这一个插件，位于
 [`plugins/module-pipeline`](plugins/module-pipeline/)。
 
-> **当前状态：** 已有单元测试和 workflow 模拟测试覆盖，但还没有在真实的 Claude Code 会话里完整跑通过。
-> 可能会有不顺手的地方，遇到问题欢迎提 issue。
+> **当前状态：** 早期版本。有单元测试和 workflow 模拟测试覆盖，也已在真实的 Claude Code 会话里完整跑通过一次：
+> 一个 10 个模块的浏览器幸存者小游戏，走完了规划、三批并行实现、集成、一轮返工和最终系统审查，共 56 个智能体。
+> 那次运行暴露的问题已在 0.4.0 修复。可能还有不顺手的地方，遇到问题欢迎提 issue。
 
 ---
 
@@ -78,7 +79,8 @@ module-pipeline 把这些都变成由工具强制执行的规则，而不是只�
 - **不占用你的工作区。** 运行进行中，你可以把主工作区切到别的分支继续工作。
 - **所有智能体都用最强的模型。** 所有职责统一使用 Opus（始终是最新版），区别只在思考强度，由你按职责
   分别设置：实现者、模块审查者、集成者、系统审查者和 ops 智能体。预设（`economy`、`balanced`、`quality`）
-  可以一次设好全部职责。
+  可以一次设好全部职责；默认预设下系统审查者用 `high`，其他智能体都用 `medium`，主架构师（`plan`、`rework`）
+  始终用 `high`。
 - **事先说明成本。** 规划结束时会列出每个阶段要启动多少个智能体，按职责和思考强度分开列。
 - **收尾。** `finish` 汇总运行分支、起草 PR 描述，并在你同意后合并或开 PR；`clean` 清理残留的 worktree
   和已合并的运行分支。
@@ -179,9 +181,10 @@ flowchart TD
 | enemy | `src/enemy/` | | 1 |
 | hud | `src/hud/` | player | 2 |
 
-它还会告诉你这次运行要启动多少个智能体，例如"全部使用 Opus；`run`：3 个实现者（high）、3 个审查者
-（high）、5 个 ops 智能体（low）；`integrate`：再加 3 个"。这时你可以调整任意职责的思考强度，比如"审查者
-用 medium，系统审查者用 max"，也可以换预设，或者给某个难的模块单独设成 `xhigh`。
+它还会告诉你这次运行要启动多少个智能体，例如"全部使用 Opus；`run`：3 个实现者（medium）、3 个审查者
+（medium）、5 个 ops 智能体（medium）；`integrate`：集成者（medium）、系统审查者（high）、3 个 ops 智能体"。
+这时你可以调整任意职责的思考强度，比如"审查者用 high，系统审查者用 max"，也可以换预设，或者给某个难的模块
+单独设成 `xhigh`。
 
 计划没问题就回答"是"。它会在新分支 `multiagent-runs/run-001` 上提交这些规划产物。
 
@@ -327,11 +330,11 @@ run:
   goal: Playable single-level prototype
 effort:                             # 各职责的思考强度：low | medium | high | xhigh | max
   preset: balanced                  # economy | balanced | quality；下面各职责的设置会覆盖预设
-  module_implementer: high
-  module_reviewer: high
-  integrator: high
-  system_reviewer: xhigh
-  pipeline_ops: low
+  module_implementer: medium
+  module_reviewer: medium
+  integrator: medium
+  system_reviewer: high
+  pipeline_ops: medium
 diagnostics:
   compile_command: ["npm", "run", "build"]   # 参数数组或 shell 字符串；没有就写 null
   test_command: ["npm", "test"]              # 在运行分支上跑完整测试套件；没有就写 null
@@ -387,13 +390,16 @@ integration:
 
 | 预设 | module_implementer | module_reviewer | integrator | system_reviewer | pipeline_ops |
 | --- | --- | --- | --- | --- | --- |
-| `economy` | medium | medium | medium | high | low |
-| `balanced`（默认） | high | high | high | high | low |
-| `quality` | xhigh | xhigh | xhigh | max | low |
+| `economy` | low | low | low | medium | low |
+| `balanced`（默认） | medium | medium | medium | high | medium |
+| `quality` | high | high | high | xhigh | medium |
 
 在 `effort:` 下单独设置的职责会覆盖预设；模块自己的 `effort` 会覆盖这个模块的 `module_implementer`
-（`integration.effort` 对集成者同理）。`pipeline_ops` 只负责转述命令，`low` 就够了；每个工作流的第一条命令
-总是以 `low` 运行，因为那时还没读到 manifest。
+（`integration.effort` 对集成者同理）。每个工作流的第一条命令（读取 manifest）以 `pipeline_ops` 的默认强度
+`medium` 运行，因为那时还没读到 manifest。
+
+主架构师就是你自己的会话：执行 `plan` 和 `rework` 时，这两个命令会把会话切到 Opus、思考强度 `high`。负责串联
+流程的命令（`run`、`integrate`、`status`、`finish`、`clean`）用 `medium`。
 
 **生成文件。** 模块范围内的生成文件和普通文件一样被合并（Godot 的 `.uid` 文件本来就应该进 git）。范围外
 的生成文件会从合并中丢弃，而不是让模块失败。只登记真正由机器生成的文件：登记在这里的文件永远不会被判为
@@ -509,6 +515,15 @@ git switch main && git merge --no-ff multiagent-runs/run-001-r1
 **`merge_failed` 并附带 hook 消息。** 你项目的 git hooks（lint、格式化等）拒绝了提交。补丁已经撤回，原因
 写在结果里，下一轮返工可以修复。如果只在主工作区位于别的分支时出现，多半是 hook 需要已安装的依赖（比如
 `node_modules`），而合并用的 worktree 里没有：把主工作区切回运行分支再重跑即可。
+
+**提示 "The Claude Code session is in …, not in the project"。** 智能体的 worktree 是从会话所在的仓库创建的，
+在别的目录启动会建错仓库。请在项目文件夹里打开会话（或把会话移过去），并且工作流运行期间不要 `cd` 到别处。
+
+**提示 "git has no user.name / user.email"。** 没有 git 身份就无法提交。在项目里设置一下，例如
+`git config user.name "你的名字"` 和 `git config user.email "you@example.com"`。
+
+**工作流启动失败，提示含有控制字符。** 工作流脚本被检出成了 Windows 换行符（CRLF）。0.4.0 起插件自带
+`.gitattributes` 强制使用 LF，用 `/plugin marketplace update multiagent-system` 更新插件即可。
 
 **工作流中途被打断。** 重新运行同一条命令即可，已合并的模块会被跳过。
 

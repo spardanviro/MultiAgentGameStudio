@@ -24,9 +24,10 @@ const CLI = `node "${pluginRoot}/scripts/pipeline.mjs"`
 const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max']
 
 // Every agent runs on the strongest model; roles differ only in thinking
-// effort. Until prepare returns the manifest's settings, ops runs at low.
+// effort. Until prepare returns the manifest's settings, ops runs at the default
+// pipeline_ops effort (medium).
 let model = 'opus'
-let opsEffort = 'low'
+let opsEffort = 'medium'
 
 const OPS_SCHEMA = {
   type: 'object',

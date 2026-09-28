@@ -11,9 +11,11 @@ work goes back into a planned rework run.
 This repository is a Claude Code plugin marketplace that contains that one
 plugin, in [`plugins/module-pipeline`](plugins/module-pipeline/).
 
-> **Status:** covered by unit and workflow-harness tests, but not yet run end to
-> end in a real Claude Code session. Expect rough edges and please open an
-> issue if something breaks.
+> **Status:** early. Covered by unit and workflow-harness tests, and run end to
+> end once in a real Claude Code session: a 10-module browser survivor game
+> went through planning, three waves, integration, one rework run and a final
+> system review (56 agents in total). The problems that run exposed are fixed
+> in 0.4.0. Expect rough edges and please open an issue if something breaks.
 
 ---
 
@@ -102,7 +104,9 @@ codebase that splits cleanly into modules.
 - **Runs every agent on the strongest model.** All roles use Opus (always the
   newest one). They differ only in thinking effort, which you set per role:
   implementers, module reviewers, integrator, system reviewer and ops agents.
-  Presets (`economy`, `balanced`, `quality`) set all of them at once.
+  Presets (`economy`, `balanced`, `quality`) set all of them at once; the
+  default gives the system reviewer `high` and every other agent `medium`,
+  and the Main Architect (`plan`, `rework`) always thinks at `high`.
 - **Shows the cost up front.** Planning ends with a count of the agents each
   stage will start, by role and thinking effort.
 - **Wraps up.** `finish` summarizes the run branch, drafts a PR description,
@@ -213,10 +217,11 @@ example:
 | hud | `src/hud/` | player | 2 |
 
 It also tells you what the run will cost in agents, for example "all on Opus;
-`run`: 3 implementers (high), 3 reviewers (high), 5 ops agents (low);
-`integrate`: 3 more". You can change the thinking effort of any role here, for
-example "reviewers on medium, system reviewer on max", switch the preset, or
-give one hard module `xhigh`.
+`run`: 3 implementers (medium), 3 reviewers (medium), 5 ops agents (medium);
+`integrate`: integrator (medium), system reviewer (high), 3 ops agents". You
+can change the thinking effort of any role here, for example "reviewers on
+high, system reviewer on max", switch the preset, or give one hard module
+`xhigh`.
 
 If the plan looks right, say yes. It then commits the planning output on the new
 branch `multiagent-runs/run-001`.
@@ -406,11 +411,11 @@ run:
   goal: Playable single-level prototype
 effort:                             # thinking effort per role: low | medium | high | xhigh | max
   preset: balanced                  # economy | balanced | quality; the roles below override it
-  module_implementer: high
-  module_reviewer: high
-  integrator: high
-  system_reviewer: xhigh
-  pipeline_ops: low
+  module_implementer: medium
+  module_reviewer: medium
+  integrator: medium
+  system_reviewer: high
+  pipeline_ops: medium
 diagnostics:
   compile_command: ["npm", "run", "build"]   # argv list or shell string; null if none
   test_command: ["npm", "test"]              # whole test suite on the run branch; null if none
@@ -469,15 +474,19 @@ Roles differ only in thinking effort:
 
 | Preset | module_implementer | module_reviewer | integrator | system_reviewer | pipeline_ops |
 | --- | --- | --- | --- | --- | --- |
-| `economy` | medium | medium | medium | high | low |
-| `balanced` (default) | high | high | high | high | low |
-| `quality` | xhigh | xhigh | xhigh | max | low |
+| `economy` | low | low | low | medium | low |
+| `balanced` (default) | medium | medium | medium | high | medium |
+| `quality` | high | high | high | xhigh | medium |
 
 A role set under `effort:` overrides the preset, and a module's own `effort`
 overrides `module_implementer` for that module (likewise `integration.effort`
-for the integrator). `pipeline_ops` only relays commands, so `low` is enough;
-the first command of each workflow always runs at `low` because the manifest
-has not been read yet.
+for the integrator). The first command of each workflow (reading the manifest)
+runs at `medium`, the default `pipeline_ops` effort, because the manifest has
+not been read yet.
+
+The Main Architect is your own session while it runs `plan` and `rework`:
+those two commands switch it to Opus at `high` effort. The orchestration
+commands (`run`, `integrate`, `status`, `finish`, `clean`) run at `medium`.
 
 **Generated files.** A generated file inside a module's scope is merged like
 any other (Godot `.uid` files belong in git). Outside the scope it is dropped
@@ -621,6 +630,21 @@ result, and the next rework run can fix it. If it only happens while the main
 checkout is on another branch, the hooks probably need installed dependencies
 (such as `node_modules`) that the merge worktree does not have: switch the main
 checkout back to the run branch and rerun.
+
+**"The Claude Code session is in …, not in the project".** Agent worktrees are
+created from the repository the session is in, so a run started from another
+folder would build worktrees of the wrong repository. Open the session in the
+project folder (or move it there) and do not `cd` elsewhere while a workflow
+runs.
+
+**"git has no user.name / user.email".** Commits would fail. Set an identity
+for the project, for example `git config user.name "Your Name"` and
+`git config user.email "you@example.com"` inside it.
+
+**A workflow will not start and mentions control characters.** The workflow
+script was checked out with Windows line endings (CRLF). Versions from 0.4.0
+on ship a `.gitattributes` that keeps LF; update the plugin with
+`/plugin marketplace update multiagent-system`.
 
 **The workflow was interrupted.** Rerun the same command. Modules that already
 merged are skipped.

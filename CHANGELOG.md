@@ -3,6 +3,44 @@
 All notable changes to the module-pipeline plugin. Versions follow
 `plugins/module-pipeline/.claude-plugin/plugin.json`.
 
+## 0.4.0 - 2026-09-29
+
+Fixes for what the first real end-to-end run (a 10-module browser game, 56
+agents) exposed, and new default thinking efforts.
+
+### Changed
+
+- Default efforts: the system reviewer thinks at `high`; module implementers,
+  module reviewers, the integrator and pipeline ops at `medium`. Presets are
+  now `economy` (low, system reviewer medium), `balanced` (the default) and
+  `quality` (high, system reviewer xhigh).
+- Skills set their own model and effort: `plan` and `rework` (the Main
+  Architect) run on opus at `high`; `run`, `integrate`, `status`, `finish` and
+  `clean` on opus at `medium`.
+- The CLI prints one line of compact JSON (`--pretty` indents it). The
+  pipeline-ops agent copies stdout verbatim, and the indented output made
+  `prepare` slow to relay.
+- The pipeline-ops agent is told not to wrap the command (it had appended
+  `; echo "EXIT:$?"`).
+- The plan skill now asks for exact spec values in contracts and for
+  behavior tests that read tuning values from the data module, so a balance
+  change does not ripple into every module's tests.
+
+### Fixed
+
+- Workflow scripts could be refused at launch for "control characters": Git
+  for Windows checked them out with CRLF. The repository now has a
+  `.gitattributes` that keeps LF, and a test guards the scripts.
+- An integration stage whose integrator had nothing to change (typical for a
+  rework run) was reported as `integration_failed` and skipped diagnostics and
+  the system review. `empty` now continues to both.
+- `prepare` refuses to start when the session is not in the project: Claude
+  Code creates agent worktrees from the session's repository, so a session
+  that had wandered into another folder would have built the wrong ones.
+- Missing `user.name` / `user.email` is reported up front by `commit-planning`
+  and `prepare` instead of failing half way through a commit.
+- Worktrees locked by Claude Code are removed after merging (`--force --force`).
+
 ## 0.3.0 - 2026-09-28
 
 ### Changed (breaking manifest change)

@@ -12,11 +12,11 @@ run:
   goal: One-sentence goal of this run
 effort:                           # thinking effort per role: low | medium | high | xhigh | max
   preset: balanced                # economy | balanced | quality (default balanced); roles below override it
-  module_implementer: high        # one agent per module
-  module_reviewer: high           # one read-only reviewer per merged module
-  integrator: high                # writes the glue code
-  system_reviewer: xhigh          # reviews the integrated result against the spec
-  pipeline_ops: low               # relays pipeline CLI commands
+  module_implementer: medium      # one agent per module
+  module_reviewer: medium         # one read-only reviewer per merged module
+  integrator: medium              # writes the glue code
+  system_reviewer: high           # reviews the integrated result against the spec
+  pipeline_ops: medium            # relays pipeline CLI commands
 diagnostics:
   compile_command: ["dotnet", "build"]   # argv list or a shell string; null if none
   test_command: ["dotnet", "test"]       # full test suite after modules merge; null if none
@@ -56,14 +56,19 @@ field; a manifest that sets one is rejected.
 
 | Preset | module_implementer | module_reviewer | integrator | system_reviewer | pipeline_ops |
 | --- | --- | --- | --- | --- | --- |
-| `economy` | medium | medium | medium | high | low |
-| `balanced` (default) | high | high | high | high | low |
-| `quality` | xhigh | xhigh | xhigh | max | low |
+| `economy` | low | low | low | medium | low |
+| `balanced` (default) | medium | medium | medium | high | medium |
+| `quality` | high | high | high | xhigh | medium |
 
 Precedence, highest first: a task's own `effort`, the role under `effort:`,
-the preset. `pipeline_ops` only relays commands and needs no more than `low`;
-the first command of each workflow always runs at `low` because the manifest
-has not been read yet.
+the preset. The first command of each workflow (reading the manifest) runs at
+`medium`, the default `pipeline_ops` effort, because the manifest has not been
+read yet.
+
+The Main Architect is the session running `/module-pipeline:plan` and
+`/module-pipeline:rework`; those skills run on opus at `high` effort. The other
+skills (`run`, `integrate`, `status`, `finish`, `clean`) only orchestrate and
+run at `medium`.
 
 ## Generated files
 

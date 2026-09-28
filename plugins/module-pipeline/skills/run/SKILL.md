@@ -4,6 +4,8 @@ description: Implement every pending module of a task manifest in parallel isola
 argument-hint: "[manifest-path]"
 arguments: [manifest]
 disable-model-invocation: true
+model: opus
+effort: medium
 ---
 
 # Run the module stage
@@ -20,6 +22,12 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/pipeline.mjs" validate "MANIFEST"
 ```
 
 If it fails, show the errors and stop.
+
+Then check where the session is: `git rev-parse --show-toplevel` must be the
+`projectRoot` from the validate output. Claude Code creates the agents'
+worktrees from the session's repository, so if it differs, stop and ask the
+user to move the session into the project folder. From here until the
+workflow finishes, do not `cd` anywhere else in the shell.
 
 Then check the checkout. If the current branch is the run branch
 `multiagent-runs/<runId>` (or that branch does not exist yet), run

@@ -110,6 +110,14 @@ export function ensureRunBranch(root, runBranch) {
   return { created: true, previousBranch: current || null };
 }
 
+/** A readable error when commits would fail for lack of user.name / user.email, else null. */
+export function gitIdentityProblem(root) {
+  const missing = ['user.name', 'user.email'].filter((key) => !git(root, ['config', key], { allowFail: true })?.trim());
+  return missing.length
+    ? `git has no ${missing.join(' / ')} for ${root}, so commits would fail. Set them, e.g. git -C "${root}" config user.name "Your Name" and git -C "${root}" config user.email "you@example.com".`
+    : null;
+}
+
 /** Make sure the run branch exists without moving the main checkout off its current branch. */
 export function ensureRunBranchExists(root, runBranch) {
   if (branchTip(root, runBranch)) {
@@ -288,7 +296,8 @@ export function applyAndCommitPatch(root, patchPath, message) {
 /** Remove a finished worktree and its branch; failures are reported, not thrown. */
 export function removeWorktree(root, worktree) {
   const branch = git(worktree, ['branch', '--show-current'], { allowFail: true })?.trim() || null;
-  const removed = git(root, ['worktree', 'remove', '--force', worktree], { allowFail: true }) !== null;
+  // Claude Code locks agent worktrees; a second --force removes locked ones too.
+  const removed = git(root, ['worktree', 'remove', '--force', '--force', worktree], { allowFail: true }) !== null;
   if (removed && branch) {
     git(root, ['branch', '-D', branch], { allowFail: true });
   }

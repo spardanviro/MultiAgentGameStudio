@@ -44,13 +44,13 @@ test('manifest: every role gets an effort from the preset unless set, and models
   const plain = parse(DEFAULT_MANIFEST.replace('effort:\n  module_implementer: medium\n', ''));
   assert.equal(plain.model, 'opus');
   assert.equal(plain.preset, 'balanced');
-  assert.deepEqual(plain.efforts, { moduleImplementer: 'high', moduleReviewer: 'high', integrator: 'high', systemReviewer: 'high', pipelineOps: 'low' });
+  assert.deepEqual(plain.efforts, { moduleImplementer: 'medium', moduleReviewer: 'medium', integrator: 'medium', systemReviewer: 'high', pipelineOps: 'medium' });
 
-  const quality = parse(withEffort('  preset: quality\n  module_reviewer: medium'));
-  assert.equal(quality.efforts.moduleReviewer, 'medium', 'an explicit role wins over its preset');
-  assert.equal(quality.efforts.systemReviewer, 'max');
-  assert.equal(quality.tasks[0].effort, 'xhigh');
-  assert.equal(quality.integration.effort, 'xhigh');
+  const quality = parse(withEffort('  preset: quality\n  module_reviewer: low'));
+  assert.equal(quality.efforts.moduleReviewer, 'low', 'an explicit role wins over its preset');
+  assert.equal(quality.efforts.systemReviewer, 'xhigh');
+  assert.equal(quality.tasks[0].effort, 'high');
+  assert.equal(quality.integration.effort, 'high');
 
   const perTask = parse(DEFAULT_MANIFEST.replace('    acceptance: [Player moves]', '    acceptance: [Player moves]\n    effort: max'));
   assert.deepEqual(perTask.tasks.map((task) => task.effort), ['max', 'medium', 'medium']);
@@ -73,8 +73,8 @@ test('validate counts the agents a run and its integration will start, by role a
   assert.equal(json.estimate.model, 'opus');
   assert.equal(json.estimate.preset, 'economy');
   assert.deepEqual(json.estimate.run, [
-    { role: 'module-implementer', count: 3, effort: 'medium' },
-    { role: 'module-reviewer', count: 3, effort: 'medium' },
+    { role: 'module-implementer', count: 3, effort: 'low' },
+    { role: 'module-reviewer', count: 3, effort: 'low' },
     { role: 'pipeline-ops', count: 5, effort: 'low' },
   ]);
   assert.deepEqual(json.estimate.integrate.map((row) => row.role), ['integrator', 'system-reviewer', 'pipeline-ops']);

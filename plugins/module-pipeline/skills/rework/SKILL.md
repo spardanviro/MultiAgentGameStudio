@@ -4,6 +4,8 @@ description: Act as the Main Architect on a finished run - decide every failure 
 argument-hint: "<run-id>"
 arguments: [run]
 disable-model-invocation: true
+model: opus
+effort: high
 ---
 
 # Main Architect: dispatch rework for run $run

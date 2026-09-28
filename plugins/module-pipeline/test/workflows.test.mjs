@@ -65,8 +65,8 @@ test('implement workflow: waves run in order, each module is committed, reviewed
   assert.ok(implementCalls.every((call) => call.effort === 'medium'), 'effort.module_implementer reaches the implementers');
   const reviewCalls = calls.filter((call) => call.agentType === 'module-pipeline:module-reviewer');
   assert.equal(reviewCalls.length, 3);
-  assert.ok(reviewCalls.every((call) => call.effort === 'high'), 'the balanced preset fills in the reviewer effort');
-  assert.ok(calls.filter((call) => call.agentType === 'module-pipeline:pipeline-ops').every((call) => call.effort === 'low'));
+  assert.ok(reviewCalls.every((call) => call.effort === 'medium'), 'the balanced preset gives reviewers medium');
+  assert.ok(calls.filter((call) => call.agentType === 'module-pipeline:pipeline-ops').every((call) => call.effort === 'medium'));
 });
 
 test('implement workflow: an out-of-scope module is not merged and its dependents are skipped', async () => {
@@ -180,12 +180,34 @@ test('integrate workflow: glue is committed, diagnostics run, and the system rev
   assert.equal(result.integration.status, 'merged');
   assert.ok(calls.every((call) => call.model === 'opus'));
   const effortOf = (agentType) => calls.find((call) => call.agentType === agentType).effort;
-  assert.equal(effortOf('module-pipeline:integrator'), 'high');
+  assert.equal(effortOf('module-pipeline:integrator'), 'medium');
   assert.equal(effortOf('module-pipeline:system-reviewer'), 'high');
   assert.equal(git(root, 'log', '-1', '--format=%s'), 'module-pipeline(run-001): integration');
   assert.match(reviewPrompt, /Spec: docs\/spec\.md/);
   assert.match(reviewPrompt, /<<<AGENT_OUTPUT\nwired player, enemy, hud/);
   assert.equal(cli(root, 'status', '--run', 'run-001').json.runs[0].tasks.integration, 'merged');
+});
+
+test('integrate workflow: an integrator with nothing to change still gets diagnostics and the system review', async () => {
+  const { root, args } = setup();
+  await runWorkflow('implement-modules', { root, args, scenario: { implement: implementer(), review: () => PASS } });
+
+  let reviewed = false;
+  const { result } = await runWorkflow('integrate-system', {
+    root,
+    args,
+    scenario: {
+      integrate: () => ({ summary: 'the existing glue already fits', testsRun: 'none', blockers: [] }),
+      systemReview: () => {
+        reviewed = true;
+        return { verdict: 'pass', summary: 'ok', spec_coverage: [], rework_items: [] };
+      },
+    },
+  });
+
+  assert.equal(result.integration.status, 'empty');
+  assert.equal(reviewed, true);
+  assert.equal(result.status, 'passed', JSON.stringify(result, null, 2));
 });
 
 test('integrate workflow refuses to start before every module is merged', async () => {

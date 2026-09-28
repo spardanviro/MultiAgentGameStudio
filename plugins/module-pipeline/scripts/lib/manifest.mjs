@@ -42,10 +42,13 @@ const ROLES = {
 export const DEFAULT_PRESET = 'balanced';
 
 // Effort per role; a role set explicitly in the manifest wins over its preset.
+// The system reviewer judges the whole result against the spec, so it thinks
+// one step harder than the per-module roles. (The Main Architect is the user's
+// session running plan/rework; those skills set their own effort.)
 export const PRESETS = {
-  economy: { moduleImplementer: 'medium', moduleReviewer: 'medium', integrator: 'medium', systemReviewer: 'high', pipelineOps: 'low' },
-  balanced: { moduleImplementer: 'high', moduleReviewer: 'high', integrator: 'high', systemReviewer: 'high', pipelineOps: 'low' },
-  quality: { moduleImplementer: 'xhigh', moduleReviewer: 'xhigh', integrator: 'xhigh', systemReviewer: 'max', pipelineOps: 'low' },
+  economy: { moduleImplementer: 'low', moduleReviewer: 'low', integrator: 'low', systemReviewer: 'medium', pipelineOps: 'low' },
+  balanced: { moduleImplementer: 'medium', moduleReviewer: 'medium', integrator: 'medium', systemReviewer: 'high', pipelineOps: 'medium' },
+  quality: { moduleImplementer: 'high', moduleReviewer: 'high', integrator: 'high', systemReviewer: 'xhigh', pipelineOps: 'medium' },
 };
 
 function effortLevel(value, fieldName) {

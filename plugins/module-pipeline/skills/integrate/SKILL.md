@@ -4,6 +4,8 @@ description: After every module is merged, write the integration glue in an isol
 argument-hint: "[manifest-path]"
 arguments: [manifest]
 disable-model-invocation: true
+model: opus
+effort: medium
 ---
 
 # Run the integration stage
@@ -17,6 +19,11 @@ Read `.multiagent/pipeline/runs/<runId>-modules-result.json` if it exists
 (run id from the manifest). If its status is not `passed`, tell the user
 which blocking items or failures are open and ask whether to integrate
 anyway. Stop unless they say yes.
+
+Check that `git rev-parse --show-toplevel` is the project root (the folder
+above the manifest's `tasks/`); agent worktrees come from the session's
+repository. If not, stop and ask the user to move the session there. Do not
+`cd` elsewhere until the workflow finishes.
 
 If the current branch is the run branch, make sure nothing outside
 `.multiagent/` and `.claude/worktrees/` is uncommitted

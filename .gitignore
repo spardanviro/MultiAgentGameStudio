@@ -5,3 +5,5 @@ npm-debug.log*
 
 # Pipeline run data written when this repo itself is used as a target project
 .multiagent/
+# Local CodeGraph index (development tool, not part of the plugin)
+.codegraph/

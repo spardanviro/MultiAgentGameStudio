@@ -18,10 +18,12 @@ Read `.multiagent/pipeline/runs/<runId>-modules-result.json` if it exists
 which blocking items or failures are open and ask whether to integrate
 anyway. Stop unless they say yes.
 
-Make sure nothing outside `.multiagent/` and `.claude/worktrees/` is
-uncommitted (`git status --porcelain`); if something is, handle it as
+If the current branch is the run branch, make sure nothing outside
+`.multiagent/` and `.claude/worktrees/` is uncommitted
+(`git status --porcelain`); if something is, handle it as
 /module-pipeline:run does: ask, and commit only with a yes via
 `node "${CLAUDE_PLUGIN_ROOT}/scripts/pipeline.mjs" commit-planning "MANIFEST"`.
+On any other branch, uncommitted files are the user's own work.
 
 ## 2. Launch the workflow
 
@@ -39,13 +41,15 @@ Workflow({
 Write the result verbatim as JSON to
 `.multiagent/pipeline/runs/<runId>-integration-result.json`, and a readable
 report to `.multiagent/pipeline/runs/<runId>-integration-report.md`: the
-integration outcome, diagnostics, the spec coverage table, and the system
-reviewer's `rework_items` as a YAML block.
+integration outcome, diagnostics (compile errors and the test result), the
+spec coverage table, and the system reviewer's `rework_items` as a YAML
+block.
 
 Tell the user the status:
 
-- `passed`: the run branch `multiagent-runs/<runId>` is ready for them to
-  review and merge. Do not merge it yourself.
+- `passed`: the run branch `multiagent-runs/<runId>` is ready. Next:
+  `/module-pipeline:finish <runId>` to review and merge it. Do not merge it
+  yourself here.
 - `rework_required`, `integration_failed`, `diagnostics_failed`,
   `review_missing`: summarize what is open; next step
   `/module-pipeline:rework <runId>`.

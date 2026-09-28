@@ -23,7 +23,9 @@ the error in `blockers`.
 ## Rules
 
 - Work only in your current worktree and only in your allowed files. Module
-  folders belong to their modules; you cannot edit them.
+  folders belong to their modules; you cannot edit them. After every shell
+  command you are told about files outside your scope; undo them right away,
+  or the integration is rejected at merge.
 - Integrate through each module's public API, signals/events, and data
   contracts as described in docs/module_contracts.md and the module reports.
   Read module source only to confirm an API that the docs leave unclear.

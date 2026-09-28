@@ -19,15 +19,19 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/pipeline.mjs" claim --run <run-id> --task <t
 ```
 
 Until it succeeds, every file write is blocked. If it fails, stop and return
-the error in `blockers`; do not work around it.
+the error in `blockers`; do not work around it. Claiming may move your fresh
+worktree to the run branch tip, so read the project only after it succeeds.
 
 ## Rules
 
 - Work only in your current worktree. Never `cd` into or edit the main project
   checkout or another worktree.
 - Write only inside the allowed files and folders listed in your task. Writes
-  elsewhere are blocked; changes made through the shell are audited after you
-  finish and reject the whole module.
+  elsewhere are blocked. After every shell command your worktree is checked,
+  and you are told about any file outside your scope; undo it right away,
+  because leftover out-of-scope changes reject the whole module at merge.
+  Files the manifest lists as generated (for example engine import caches)
+  are dropped automatically when they land outside your scope.
 - You may create, split, rename, and delete files inside your owned folder as
   the module needs.
 - If the module needs something outside your scope (another module's API, a

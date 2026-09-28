@@ -87,6 +87,7 @@ test('claim + integrate-task commits an in-scope module and cleans up its worktr
   const merged = cli(root, 'integrate-task', '--run', 'run-001', '--task', 'player');
   assert.equal(merged.code, 0, JSON.stringify(merged.json));
   assert.equal(merged.json.status, 'merged');
+  assert.equal(merged.json.via, 'main-checkout');
   assert.equal(merged.json.commit, git(root, 'rev-parse', 'HEAD'));
   assert.equal(git(root, 'log', '-1', '--format=%s'), 'module-pipeline(run-001): player');
   assert.match(fs.readFileSync(path.join(root, 'src/player/player.gd'), 'utf8'), /var hp = 100/);

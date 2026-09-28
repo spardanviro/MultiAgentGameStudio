@@ -13,6 +13,12 @@ module code yourself; you write the next run for the module agents.
 
 ## 1. Gather
 
+The next run's planning output is written in the main checkout and must be
+committed on top of run `$run`. If `git branch --show-current` is not
+`multiagent-runs/$run`, ask the user whether to switch to it (they may have
+uncommitted work of their own on the current branch) and only switch with a
+yes; stop otherwise.
+
 - `.multiagent/pipeline/runs/$run-modules-result.json` and
   `$run-integration-result.json` (whichever exist), and the matching
   `-report.md` files.
@@ -51,8 +57,11 @@ before writing anything, and adjust if they object.
 If every item is deferred, say so and stop; the user can continue with
 `/module-pipeline:integrate` or merge the run branch.
 
-Otherwise, with next run id `<$run>-r<N>` (N = 1, or one more than the
-highest existing suffix):
+Otherwise, pick the next run id: take `$run` without any trailing `-r<N>`
+suffix (so `run-001-r2` becomes `run-001`), then append `-r<N>` where N is one
+more than the highest N already used by any `tasks/task_manifest.<id>-r<N>.yaml`
+or `multiagent-runs/<id>-r<N>` branch, or 1 if there is none. Rework of
+`run-001` is `run-001-r1`, rework of `run-001-r1` is `run-001-r2`. Write:
 
 - `tasks/task_manifest.<next-run-id>.yaml`: same schema as the current
   manifest (see `${CLAUDE_PLUGIN_ROOT}/skills/plan/manifest-schema.md`), with

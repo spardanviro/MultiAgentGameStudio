@@ -11,13 +11,19 @@ run:
   id: run-001                     # letters, digits, . _ - ; becomes branch multiagent-runs/run-001
   goal: One-sentence goal of this run
 defaults:
+  preset: balanced                # optional: economy | balanced | quality (see below); fields below override it
   model: sonnet                   # model for module and integration agents (omit to inherit the session model)
   effort: medium                  # low | medium | high | xhigh | max
   review_model: opus              # model for reviewers
   review_effort: high
 diagnostics:
   compile_command: ["dotnet", "build"]   # argv list or a shell string; null if none
-  timeout_ms: 300000
+  test_command: ["dotnet", "test"]       # full test suite after modules merge; null if none
+  timeout_ms: 300000                     # per command
+generated_files:                  # tool output that may appear outside a task's scope
+  - "*.uid"                       # file-name pattern ("*" only), matched anywhere
+  - "*.import"
+  - .godot/                       # a folder
 tasks:
   - id: player-health             # unique; "integration" is reserved
     feature: Player health and damage
@@ -41,6 +47,25 @@ integration:                      # optional glue stage, run by /module-pipeline
     - The game starts, spawns the player and enemies, and the HUD tracks health
 ```
 
+## Presets
+
+| Preset | Module and integration agents | Reviewers |
+| --- | --- | --- |
+| `economy` | sonnet / low | sonnet / medium |
+| `balanced` | sonnet / medium | opus / high |
+| `quality` | opus / high | opus / xhigh |
+
+Without a preset or explicit values, agents inherit the session model.
+
+## Generated files
+
+Engines and tools write files nobody asked for: Godot's `.uid` and `.import`
+files, caches, build output. A generated file inside a task's own scope is
+merged like any other file (Godot `.uid` files belong in git). One outside the
+task's scope is dropped from the merge instead of rejecting the whole module.
+List only files that really are machine-written; anything listed here can
+never cause a scope violation.
+
 ## Rules the validator enforces
 
 - Every module task has an `owned_folder` (legacy manifests may use `owned_script` for a single file).
@@ -52,3 +77,6 @@ integration:                      # optional glue stage, run by /module-pipeline
 - Every `prompt_file` must exist.
 - The owned folder, test folder, module report and interface request are always writable by that
   module; `allowed_files` only adds to them. Globs are rejected; use a folder ending in `/`.
+- `generated_files` entries are a file-name pattern without `/` (only `*` as a wildcard), a folder
+  ending in `/`, or one exact path.
+- `defaults.preset` must be `economy`, `balanced` or `quality`.

@@ -2,6 +2,7 @@
 //   runs/<runId>.json      task outcomes for a run (survives sessions)
 //   claims/<hash>.json     which task a worktree belongs to (read by the hook)
 //   patches/<run>/<task>.patch
+//   merge/<runId>/         detached worktree for commits while the main checkout is elsewhere
 //   lock                   serializes merges into the project
 import crypto from 'node:crypto';
 import fs from 'node:fs';
@@ -47,6 +48,22 @@ export function saveRunState(root, state) {
 
 export function patchPath(root, runId, taskId) {
   return path.join(pipelineDir(root), 'patches', runId, `${taskId}.patch`);
+}
+
+/** Detached worktree used to commit and check a run while the main checkout is elsewhere. */
+export function mergeWorktreePath(root, runId) {
+  return path.join(pipelineDir(root), 'merge', runId);
+}
+
+export function listRunIds(root) {
+  const dir = path.join(pipelineDir(root), 'runs');
+  if (!fs.existsSync(dir)) {
+    return [];
+  }
+  return fs
+    .readdirSync(dir)
+    .filter((name) => name.endsWith('.json') && !/-(modules|integration)-result\.json$/.test(name))
+    .map((name) => name.slice(0, -5));
 }
 
 // ---- claims -----------------------------------------------------------------

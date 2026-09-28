@@ -109,6 +109,126 @@ export function ensureRunBranch(root, runBranch) {
   return { created: true, previousBranch: current || null };
 }
 
+function samePath(a, b) {
+  const left = path.resolve(a);
+  const right = path.resolve(b);
+  return process.platform === 'win32' ? left.toLowerCase() === right.toLowerCase() : left === right;
+}
+
+/** Make sure the run branch exists without moving the main checkout off its current branch. */
+export function ensureRunBranchExists(root, runBranch) {
+  if (branchTip(root, runBranch)) {
+    return { created: false };
+  }
+  return { created: true, ...ensureRunBranch(root, runBranch) };
+}
+
+/** The worktree that has `branch` checked out, or null. */
+export function worktreeForBranch(root, branch) {
+  const output = git(root, ['worktree', 'list', '--porcelain']);
+  let current = null;
+  for (const line of output.split(/\r?\n/)) {
+    if (line.startsWith('worktree ')) {
+      current = line.slice('worktree '.length);
+    } else if (line === `branch refs/heads/${branch}` && current) {
+      return path.resolve(current);
+    }
+  }
+  return null;
+}
+
+export function isMainCheckoutOn(root, branch) {
+  const holder = worktreeForBranch(root, branch);
+  return Boolean(holder && samePath(holder, root));
+}
+
+export function isClean(worktree) {
+  return !git(worktree, ['status', '--porcelain', '--untracked-files=all']).trim();
+}
+
+/** Move a clean worktree to `commit`; used to start agents from the run branch tip. */
+export function syncWorktreeTo(worktree, commit) {
+  if (head(worktree) === commit) {
+    return false;
+  }
+  if (!isClean(worktree)) {
+    throw new Error(`The worktree already has changes and does not start at the run branch tip ${commit.slice(0, 12)}.`);
+  }
+  git(worktree, ['reset', '--quiet', '--hard', commit]);
+  return true;
+}
+
+/**
+ * A detached worktree at the run branch tip, used to commit and check the
+ * run while the main checkout is on another branch.
+ */
+export function ensureMergeWorktree(root, mergePath, tip) {
+  const usable =
+    fs.existsSync(path.join(mergePath, '.git')) &&
+    git(mergePath, ['rev-parse', '--is-inside-work-tree'], { allowFail: true }) !== null;
+  if (!usable) {
+    // Missing, or a leftover folder git no longer knows as a worktree.
+    fs.rmSync(mergePath, { recursive: true, force: true });
+    git(root, ['worktree', 'prune']);
+    fs.mkdirSync(path.dirname(mergePath), { recursive: true });
+    git(root, ['worktree', 'add', '--detach', mergePath, tip]);
+    return mergePath;
+  }
+  git(mergePath, ['reset', '--quiet', '--hard']);
+  git(mergePath, ['clean', '-fdq']);
+  git(mergePath, ['checkout', '--quiet', '--detach', tip]);
+  return mergePath;
+}
+
+/**
+ * Commit a patch on the run branch. When the main checkout is on the run
+ * branch the patch is committed there (project hooks see its installed
+ * dependencies). Otherwise it is committed in the detached merge worktree
+ * and the branch ref is moved, leaving the main checkout alone.
+ */
+export function commitPatchOnRunBranch(root, runBranch, mergePath, patchPath, message) {
+  const holder = worktreeForBranch(root, runBranch);
+  if (holder && samePath(holder, root)) {
+    return { commit: applyAndCommitPatch(root, patchPath, message), via: 'main-checkout' };
+  }
+  if (holder) {
+    throw new Error(`Run branch ${runBranch} is checked out in ${holder}; switch that worktree away from it or back to the main checkout.`);
+  }
+  const tip = branchTip(root, runBranch);
+  if (!tip) {
+    throw new Error(`Run branch ${runBranch} does not exist.`);
+  }
+  ensureMergeWorktree(root, mergePath, tip);
+  const commit = applyAndCommitPatch(mergePath, patchPath, message);
+  git(root, ['update-ref', `refs/heads/${runBranch}`, commit, tip]);
+  return { commit, via: 'merge-worktree' };
+}
+
+/**
+ * Where the run branch's files can be read and built: the main checkout when
+ * it is on the run branch, otherwise the merge worktree moved to the tip.
+ */
+export function runBranchCheckout(root, runBranch, mergePath) {
+  if (isMainCheckoutOn(root, runBranch)) {
+    return root;
+  }
+  const tip = branchTip(root, runBranch);
+  if (!tip) {
+    throw new Error(`Run branch ${runBranch} does not exist.`);
+  }
+  return ensureMergeWorktree(root, mergePath, tip);
+}
+
+export function mergedBranches(root, pattern, target) {
+  const output = git(root, ['branch', '--format=%(refname:short)', '--list', pattern, '--merged', target]);
+  return output.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+}
+
+export function listBranches(root, pattern) {
+  const output = git(root, ['branch', '--format=%(refname:short)', '--list', pattern]);
+  return output.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+}
+
 /** Files changed in a worktree relative to its base commit, including untracked ones. */
 export function changedFiles(worktree, base) {
   const tracked = git(worktree, ['diff', '--name-only', '-z', base]).split('\0');

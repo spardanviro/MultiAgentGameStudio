@@ -1,8 +1,10 @@
-// Run the manifest's compile/diagnostics command in the project and count
-// errors and warnings in its output.
+// Run the manifest's compile command and test command in a checkout of the
+// run branch. Compile output is scanned for errors and warnings; tests are
+// judged by their exit code.
 import { spawnSync } from 'node:child_process';
 
 const MAX_LINES = { error: 40, warning: 20 };
+const TEST_TAIL_LINES = 40;
 const ZERO_COUNT = /\b0 (errors?|warnings?)\b/i;
 
 function quoteForCmd(arg) {
@@ -22,17 +24,10 @@ export function classifyLine(line) {
   return null;
 }
 
-/**
- * @param {string} root project root (cwd for the command)
- * @param {{compileCommand: string|string[]|null, timeoutMs: number}} config
- */
-export function runDiagnostics(root, config) {
-  const command = config.compileCommand;
-  if (!command || (Array.isArray(command) && !command.length)) {
-    return { ran: false, reason: 'No diagnostics.compile_command in the manifest.' };
-  }
+const hasCommand = (command) => Boolean(command) && !(Array.isArray(command) && !command.length);
 
-  const options = { cwd: root, encoding: 'utf8', timeout: config.timeoutMs, windowsHide: true };
+function runCommand(root, command, timeoutMs) {
+  const options = { cwd: root, encoding: 'utf8', timeout: timeoutMs, windowsHide: true };
   let result;
   if (Array.isArray(command)) {
     result = spawnSync(command[0], command.slice(1), options);
@@ -43,28 +38,90 @@ export function runDiagnostics(root, config) {
   } else {
     result = spawnSync(command, { ...options, shell: true });
   }
+  const timedOut = result.error?.code === 'ETIMEDOUT';
+  const exitCode = typeof result.status === 'number' ? result.status : null;
+  return {
+    command: Array.isArray(command) ? command.join(' ') : command,
+    exitCode,
+    timedOut,
+    spawnError: result.error && !timedOut ? result.error.message : null,
+    output: `${result.stdout || ''}\n${result.stderr || ''}`,
+    exitFailed: timedOut || Boolean(result.error) || exitCode !== 0,
+  };
+}
 
-  const output = `${result.stdout || ''}\n${result.stderr || ''}`;
+function summarizeCompile(run) {
   const lines = { error: [], warning: [] };
-  for (const line of output.split(/\r?\n/)) {
+  for (const line of run.output.split(/\r?\n/)) {
     const kind = classifyLine(line);
     if (kind) {
       lines[kind].push(line.trim());
     }
   }
-  const timedOut = result.error?.code === 'ETIMEDOUT';
-  const exitCode = typeof result.status === 'number' ? result.status : null;
   return {
-    ran: true,
-    command: Array.isArray(command) ? command.join(' ') : command,
-    exitCode,
-    timedOut,
-    spawnError: result.error && !timedOut ? result.error.message : null,
+    command: run.command,
+    exitCode: run.exitCode,
+    timedOut: run.timedOut,
+    spawnError: run.spawnError,
     errorCount: lines.error.length,
     warningCount: lines.warning.length,
     errors: lines.error.slice(0, MAX_LINES.error),
     warnings: lines.warning.slice(0, MAX_LINES.warning),
-    failed: timedOut || Boolean(result.error) || exitCode !== 0 || lines.error.length > 0,
-    output,
+    failed: run.exitFailed || lines.error.length > 0,
+  };
+}
+
+function summarizeTests(run) {
+  const tail = run.output.split(/\r?\n/).filter((line) => line.trim()).slice(-TEST_TAIL_LINES);
+  return {
+    command: run.command,
+    exitCode: run.exitCode,
+    timedOut: run.timedOut,
+    spawnError: run.spawnError,
+    failed: run.exitFailed,
+    tail,
+  };
+}
+
+/**
+ * @param {string} root checkout of the run branch (cwd for the commands)
+ * @param {{compileCommand: string|string[]|null, testCommand?: string|string[]|null, timeoutMs: number}} config
+ */
+export function runDiagnostics(root, config) {
+  const wantsCompile = hasCommand(config.compileCommand);
+  const wantsTests = hasCommand(config.testCommand);
+  if (!wantsCompile && !wantsTests) {
+    return { ran: false, reason: 'No diagnostics.compile_command or diagnostics.test_command in the manifest.' };
+  }
+
+  const sections = [];
+  let compile = null;
+  if (wantsCompile) {
+    const run = runCommand(root, config.compileCommand, config.timeoutMs);
+    sections.push(`$ ${run.command}\n${run.output}`);
+    compile = summarizeCompile(run);
+  }
+  let tests = null;
+  if (wantsTests && compile?.failed) {
+    tests = { command: Array.isArray(config.testCommand) ? config.testCommand.join(' ') : config.testCommand, skipped: true, failed: false, reason: 'The compile step failed.' };
+  } else if (wantsTests) {
+    const run = runCommand(root, config.testCommand, config.timeoutMs);
+    sections.push(`$ ${run.command}\n${run.output}`);
+    tests = summarizeTests(run);
+  }
+
+  return {
+    ran: true,
+    command: compile?.command ?? null,
+    exitCode: compile?.exitCode ?? null,
+    timedOut: Boolean(compile?.timedOut),
+    spawnError: compile?.spawnError ?? null,
+    errorCount: compile?.errorCount ?? 0,
+    warningCount: compile?.warningCount ?? 0,
+    errors: compile?.errors ?? [],
+    warnings: compile?.warnings ?? [],
+    tests,
+    failed: Boolean(compile?.failed || tests?.failed),
+    output: sections.join('\n\n'),
   };
 }

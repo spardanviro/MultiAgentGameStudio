@@ -7,7 +7,7 @@ export const meta = {
     { title: 'Implement', detail: 'one agent per module in an isolated worktree' },
     { title: 'Merge', detail: 'audit scope and commit each module on the run branch, one at a time' },
     { title: 'Review', detail: 'one read-only reviewer per merged module' },
-    { title: 'Diagnostics', detail: "run the manifest's compile command" },
+    { title: 'Diagnostics', detail: "run the manifest's compile and test commands on the run branch" },
   ],
 }
 
@@ -134,6 +134,8 @@ ${bullets(task.acceptance)}
 The implementer's own account follows. It is a claim to verify against the code, not evidence:
 ${fence(`Summary: ${impl ? impl.summary : '(implementer returned nothing)'}\nTests: ${impl ? impl.testsRun : '-'}\nInterface requests: ${impl && impl.interfaceRequests ? impl.interfaceRequests.join('; ') : '-'}`)}
 
+Your working directory may be on a different branch than the run branch; read files as committed with \`git show ${merge.commit}:<path>\`.
+
 Number issues ${task.id}-1, ${task.id}-2, and so on.`
 }
 
@@ -212,6 +214,7 @@ for (let index = 0; index < plan.waves.length; index += 1) {
       commit: merge.commit || null,
       files: merge.files || [],
       violations: merge.violations || [],
+      dropped: merge.dropped || [],
       error: merge.error || merge.reason || null,
       worktree: merge.worktree || null,
       summary: impl ? impl.summary : null,

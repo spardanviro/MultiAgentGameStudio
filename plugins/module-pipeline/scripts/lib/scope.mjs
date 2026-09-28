@@ -57,6 +57,62 @@ export function createScopeMatcher(entries) {
 }
 
 /**
+ * Normalize a generated-file pattern. Three forms:
+ *   "*.uid"      a file-name pattern (no "/"; "*" matches anything) checked against the base name
+ *   ".godot/"    a folder, covering everything below it
+ *   "a/b.txt"    one exact file
+ */
+export function normalizeGeneratedPattern(value, fieldName = 'generated_files entry') {
+  const text = toPosix(value).trim().replace(/^\.\/+/, '');
+  if (!text) {
+    throw new Error(`${fieldName} must not be empty.`);
+  }
+  if (!text.includes('/')) {
+    if (/[?[\]]/.test(text)) {
+      throw new Error(`${fieldName} supports only "*" wildcards: ${value}`);
+    }
+    return text;
+  }
+  return normalizeScopeEntry(text, fieldName);
+}
+
+const escapeRegExp = (text) => text.replace(/[.+^${}()|\\]/g, '\\$&');
+
+export function createGeneratedMatcher(patterns = []) {
+  const tests = patterns.map((pattern) => {
+    if (pattern.includes('/')) {
+      return (relPath) => entryCovers(pattern, relPath);
+    }
+    const regex = new RegExp(`^${pattern.split('*').map(escapeRegExp).join('.*')}$`, 'i');
+    return (relPath) => regex.test(toPosix(relPath).split('/').pop());
+  });
+  return (relPath) => tests.some((test) => test(relPath));
+}
+
+/**
+ * Sort changed files into what a task may merge, what breaks its scope, and
+ * generated files outside its scope that are dropped instead of rejected.
+ * Generated files inside the scope are merged like any other file.
+ */
+export function auditChanges(changed, allowedFiles, generatedFiles = []) {
+  const allowed = createScopeMatcher(allowedFiles);
+  const generated = createGeneratedMatcher(generatedFiles);
+  const inScope = [];
+  const violations = [];
+  const dropped = [];
+  for (const file of changed) {
+    if (allowed(file)) {
+      inScope.push(file);
+    } else if (generated(file)) {
+      dropped.push(file);
+    } else {
+      violations.push(file);
+    }
+  }
+  return { inScope, violations, dropped };
+}
+
+/**
  * Resolve a path (absolute, or relative to root) to a root-relative posix
  * path, or null when it is outside root.
  */

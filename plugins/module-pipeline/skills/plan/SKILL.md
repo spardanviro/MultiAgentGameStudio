@@ -56,10 +56,19 @@ glue. Keep your own reading of the existing code to what planning needs.
    the acceptance criteria, and how to run its tests. If the project has glue
    to write, add `work/prompts/integration.md` for the integration agent.
 6. **Write the manifest** at `tasks/task_manifest.yaml` following
-   `${CLAUDE_SKILL_DIR}/manifest-schema.md`. Set `project.spec` to the in-repo
-   spec path and `diagnostics.compile_command` to the project's terminal
-   build/typecheck command if it has one (for example `["npm", "run", "build"]`,
-   `["dotnet", "build"]`, `["cargo", "check"]`); otherwise null.
+   `${CLAUDE_SKILL_DIR}/manifest-schema.md`. Set:
+   - `project.spec` to the in-repo spec path.
+   - `diagnostics.compile_command` to the project's terminal build/typecheck
+     command if it has one (for example `["npm", "run", "build"]`,
+     `["dotnet", "build"]`, `["cargo", "check"]`); otherwise null.
+   - `diagnostics.test_command` to the command that runs the whole test suite
+     headlessly, if the project has one; otherwise null.
+   - `generated_files` to what the engine or tools write on their own. For
+     Godot use `["*.uid", "*.import", ".godot/"]`; for Unity
+     `["*.meta", "Library/", "Temp/", "Logs/"]`. Leave it out when nothing
+     applies.
+   - `defaults.preset` to `balanced` unless the user asked for something
+     cheaper (`economy`) or stronger (`quality`).
 7. **Validate** and fix until it passes:
 
    ```
@@ -67,8 +76,13 @@ glue. Keep your own reading of the existing code to what planning needs.
    ```
 
 8. **Hand over.** Show the user a table of modules (id, owned folder, depends
-   on, acceptance count) and the waves from the validate output. Then ask
-   whether to commit the planning output. Only if they agree, run:
+   on, acceptance count) and the waves from the validate output. Then show
+   the cost picture from `estimate` in the validate output: how many agents
+   `/module-pipeline:run` and `/module-pipeline:integrate` will start, by
+   role and model, and the preset in use. Say plainly that every implementer
+   and reviewer is a full agent session, and that switching `defaults.preset`
+   to `economy` or giving simple modules `model: haiku` lowers the cost. Then
+   ask whether to commit the planning output. Only if they agree, run:
 
    ```
    node "${CLAUDE_PLUGIN_ROOT}/scripts/pipeline.mjs" commit-planning tasks/task_manifest.yaml

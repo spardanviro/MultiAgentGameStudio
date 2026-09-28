@@ -1,18 +1,26 @@
 #!/usr/bin/env node
-// PreToolUse hook for Edit/Write/MultiEdit/NotebookEdit.
+// Scope hooks for pipeline writers (the module-implementer and integrator
+// agents); every other session and agent passes through untouched.
 //
-// Only pipeline writers (the module-implementer and integrator agents) are
-// checked; every other session and agent passes through untouched. A
-// pipeline writer must work inside its own claimed worktree, and may only
-// write the files its task allows. Errors deny the write for pipeline
-// writers (fail closed) and allow it for everyone else.
+// PreToolUse (Edit/Write/MultiEdit/NotebookEdit): a pipeline writer must work
+// inside its own claimed worktree and may only write the files its task
+// allows. Errors deny the write (fail closed).
+//
+// PostToolUse (Bash): shell commands cannot be checked before they run, so
+// after each one the worktree is compared with the task's scope and the agent
+// is told at once about files outside it, while it can still undo them.
+// Errors here are ignored; the audit before merging is the final check.
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createScopeMatcher, toRootRelative } from './lib/scope.mjs';
+import { changedFiles } from './lib/git.mjs';
+import { auditChanges, createScopeMatcher, toRootRelative } from './lib/scope.mjs';
 import { findGitRoot, projectRootForWorktree, readClaim } from './lib/state.mjs';
 
 const WRITER_AGENT = /(^|:)(module-implementer|integrator)$/;
+const MAX_LISTED = 15;
+
+const isWriter = (input) => WRITER_AGENT.test(String(input?.agent_type || ''));
 
 function deny(reason) {
   return {
@@ -29,7 +37,7 @@ function deny(reason) {
  * @returns {object|null} hook output, or null to let the call proceed
  */
 export function decide(input) {
-  if (!WRITER_AGENT.test(String(input?.agent_type || ''))) {
+  if (!isWriter(input)) {
     return null;
   }
   try {
@@ -57,6 +65,47 @@ export function decide(input) {
   }
 }
 
+/**
+ * @param {object} input PostToolUse hook input
+ * @returns {object|null} hook output telling the agent about out-of-scope files, or null
+ */
+export function watch(input) {
+  if (!isWriter(input) || input.tool_name !== 'Bash') {
+    return null;
+  }
+  try {
+    const gitInfo = findGitRoot(input.cwd || process.cwd());
+    if (!gitInfo?.isLinkedWorktree) {
+      return null;
+    }
+    const claim = readClaim(projectRootForWorktree(gitInfo), gitInfo.root);
+    if (!claim) {
+      return null;
+    }
+    const changed = changedFiles(claim.worktree, claim.base);
+    const { violations } = auditChanges(changed, claim.allowedFiles, claim.generatedFiles || []);
+    if (!violations.length) {
+      return null;
+    }
+    const listed = violations.slice(0, MAX_LISTED).map((file) => `  ${file}`).join('\n');
+    const more = violations.length > MAX_LISTED ? `\n  … and ${violations.length - MAX_LISTED} more` : '';
+    return {
+      decision: 'block',
+      reason:
+        `Your worktree now has changes outside what task ${claim.taskId} may write:\n${listed}${more}\n` +
+        'If they stay, the whole module is rejected at merge. Undo them now: restore files that existed before with ' +
+        `\`git checkout ${claim.base.slice(0, 12)} -- <path>\`, and delete new files (\`git rm -f <path>\` if you committed them). ` +
+        `If the project really needs that change, describe it in ${claim.interfaceRequest} instead.`,
+    };
+  } catch {
+    return null;
+  }
+}
+
+export function handle(input) {
+  return input?.hook_event_name === 'PostToolUse' ? watch(input) : decide(input);
+}
+
 function readStdin() {
   try {
     return fs.readFileSync(0, 'utf8');
@@ -74,7 +123,7 @@ if (process.platform === 'win32' ? invoked.toLowerCase() === self.toLowerCase() 
   } catch {
     input = null;
   }
-  const output = input ? decide(input) : null;
+  const output = input ? handle(input) : null;
   if (output) {
     process.stdout.write(JSON.stringify(output));
   }

@@ -69,7 +69,7 @@ integration:
  */
 export function makeProject(manifestText = DEFAULT_MANIFEST) {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'module-pipeline-')));
-  git(root, 'init', '-q');
+  git(root, 'init', '-q', '-b', 'main');
   git(root, 'config', 'user.email', 'test@example.com');
   git(root, 'config', 'user.name', 'Test');
   write(root, 'README.md', '# game\n');

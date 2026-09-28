@@ -4,8 +4,9 @@
 //   version: 1
 //   project: { name, root?, spec? }
 //   run: { id, goal? }
-//   defaults: { model?, effort?, review_model?, review_effort? }
-//   diagnostics: { compile_command?: string | string[], timeout_ms? }
+//   defaults: { preset?, model?, effort?, review_model?, review_effort? }
+//   diagnostics: { compile_command?, test_command?: string | string[], timeout_ms? }
+//   generated_files: ["*.uid", ".godot/"]   # tool output dropped (not rejected) when outside a task's scope
 //   tasks:            # module tasks, one owned folder each
 //     - id, feature, owner?, owned_folder (or legacy owned_script),
 //       test_folder? | test_file?, prompt_file, module_report?,
@@ -15,10 +16,39 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import yaml from '../vendor/js-yaml.mjs';
-import { entriesOverlap, normalizeRelPath, normalizeScopeEntry } from './scope.mjs';
+import { entriesOverlap, normalizeGeneratedPattern, normalizeRelPath, normalizeScopeEntry } from './scope.mjs';
 
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 const INTEGRATION_ID = 'integration';
+
+// Model/effort defaults a manifest can start from; explicit defaults win.
+export const PRESETS = {
+  economy: { model: 'sonnet', effort: 'low', reviewModel: 'sonnet', reviewEffort: 'medium' },
+  balanced: { model: 'sonnet', effort: 'medium', reviewModel: 'opus', reviewEffort: 'high' },
+  quality: { model: 'opus', effort: 'high', reviewModel: 'opus', reviewEffort: 'xhigh' },
+};
+
+function resolveDefaults(rawDefaults) {
+  const presetName = rawDefaults.preset ? String(rawDefaults.preset) : null;
+  if (presetName && !PRESETS[presetName]) {
+    throw new Error(`defaults.preset must be one of ${Object.keys(PRESETS).join(', ')}: ${presetName}`);
+  }
+  const preset = presetName ? PRESETS[presetName] : {};
+  return {
+    preset: presetName,
+    model: rawDefaults.model || rawDefaults.sub_agent_model || preset.model || null,
+    effort: rawDefaults.effort || rawDefaults.sub_agent_effort || preset.effort || null,
+    reviewModel: rawDefaults.review_model || rawDefaults.review_agent_model || preset.reviewModel || null,
+    reviewEffort: rawDefaults.review_effort || rawDefaults.review_agent_effort || preset.reviewEffort || null,
+  };
+}
+
+function commandOrNull(value) {
+  if (Array.isArray(value)) {
+    return value.length ? value.map(String) : null;
+  }
+  return value ? String(value) : null;
+}
 
 function safeId(value, fieldName) {
   const text = String(value ?? '').trim();
@@ -207,13 +237,7 @@ export function validateManifest(raw, manifestPath) {
     throw new Error('Manifest version must be 1.');
   }
   const runId = safeId(raw.run?.id, 'run.id');
-  const rawDefaults = raw.defaults || {};
-  const defaults = {
-    model: rawDefaults.model || rawDefaults.sub_agent_model || null,
-    effort: rawDefaults.effort || rawDefaults.sub_agent_effort || null,
-    reviewModel: rawDefaults.review_model || rawDefaults.review_agent_model || null,
-    reviewEffort: rawDefaults.review_effort || rawDefaults.review_agent_effort || null,
-  };
+  const defaults = resolveDefaults(raw.defaults || {});
   if (!Array.isArray(raw.tasks) || !raw.tasks.length) {
     throw new Error('Manifest must contain at least one module task under tasks.');
   }
@@ -229,7 +253,10 @@ export function validateManifest(raw, manifestPath) {
   validateOwnership(tasks, integration);
   planWaves(tasks);
 
-  const compileCommand = raw.diagnostics?.compile_command ?? null;
+  if (raw.generated_files != null && !Array.isArray(raw.generated_files)) {
+    throw new Error('generated_files must be a list.');
+  }
+  const generatedFiles = [...new Set(asStringList(raw.generated_files).map((entry) => normalizeGeneratedPattern(entry)))];
   return {
     manifestPath: path.resolve(manifestPath),
     projectRoot: resolveProjectRoot(raw.project?.root, manifestPath),
@@ -238,11 +265,46 @@ export function validateManifest(raw, manifestPath) {
     goal: String(raw.run?.goal || ''),
     defaults,
     diagnostics: {
-      compileCommand: Array.isArray(compileCommand) ? compileCommand.map(String) : compileCommand ? String(compileCommand) : null,
+      compileCommand: commandOrNull(raw.diagnostics?.compile_command),
+      testCommand: commandOrNull(raw.diagnostics?.test_command),
       timeoutMs: Number(raw.diagnostics?.timeout_ms) || 300000,
     },
+    generatedFiles,
     tasks,
     integration,
+  };
+}
+
+/**
+ * How many agents a run starts, by role and model. Token use is not
+ * estimated: it depends far more on the modules than on the counts.
+ */
+export function estimateRun(manifest, done = new Set()) {
+  const label = (model, effort) => `${model || 'session model'}${effort ? ` / ${effort}` : ''}`;
+  const pending = manifest.tasks.filter((task) => !done.has(task.id));
+  const byModel = new Map();
+  for (const task of pending) {
+    const key = label(task.model, task.effort);
+    byModel.set(key, (byModel.get(key) || 0) + 1);
+  }
+  const roles = [
+    ...[...byModel].map(([model, count]) => ({ role: 'module-implementer', count, model })),
+    { role: 'module-reviewer', count: pending.length, model: label(manifest.defaults.reviewModel, manifest.defaults.reviewEffort) },
+    { role: 'pipeline-ops', count: pending.length + 2, model: 'haiku / low' },
+  ].filter((row) => row.count > 0);
+  const integration = manifest.integration
+    ? [
+        { role: 'integrator', count: 1, model: label(manifest.integration.model, manifest.integration.effort) },
+        { role: 'system-reviewer', count: 1, model: label(manifest.defaults.reviewModel, manifest.defaults.reviewEffort) },
+        { role: 'pipeline-ops', count: 3, model: 'haiku / low' },
+      ]
+    : [];
+  const sum = (rows) => rows.reduce((total, row) => total + row.count, 0);
+  return {
+    preset: manifest.defaults.preset,
+    run: roles,
+    integrate: integration,
+    totalAgents: sum(roles) + sum(integration),
   };
 }
 

@@ -6,7 +6,7 @@ export const meta = {
     { title: 'Prepare', detail: 'confirm every module is merged' },
     { title: 'Integrate', detail: 'integration agent in an isolated worktree' },
     { title: 'Merge', detail: 'audit scope and commit the glue code' },
-    { title: 'Diagnostics', detail: "run the manifest's compile command" },
+    { title: 'Diagnostics', detail: "run the manifest's compile and test commands on the run branch" },
     { title: 'Review', detail: 'read-only system review against the spec' },
   ],
 }
@@ -111,6 +111,14 @@ async function ops(command, label, phaseTitle) {
   }
 }
 
+function testSummary(diagnostics) {
+  const tests = diagnostics && diagnostics.tests
+  if (!tests) return 'not configured'
+  if (tests.skipped) return `skipped (${tests.reason})`
+  if (!tests.failed) return `passed (${tests.command})`
+  return `failed (${tests.command}, exit ${tests.exitCode})\n${fence((tests.tail || []).slice(-20).join('\n'))}`
+}
+
 const moduleLines = (modules) =>
   modules.map((module) => `- ${module.id} (${module.feature}): owns ${module.ownedFolder || module.ownedScript}; report ${module.report}`).join('\n')
 
@@ -174,13 +182,14 @@ const review = await agent(
   `Review the integrated result of run ${plan.runId} against the implementation spec.
 
 Spec: ${plan.spec || 'docs/ (find the implementation spec; the manifest names none)'}
-Run branch: ${plan.runBranch} (use git log / git show to see every module and the glue commit)
+Run branch: ${plan.runBranch} (use git log / git show to see every module and the glue commit). Your working directory may be on a different branch; read files with \`git show ${plan.runBranch}:<path>\`.
 ${plan.integration ? `Integration report: ${plan.integration.report}` : ''}
 
 Modules:
 ${moduleLines(plan.modules)}
 
-Compile diagnostics: ${diagnostics.ran ? `${diagnostics.errorCount} errors, ${diagnostics.warningCount} warnings${diagnostics.errors && diagnostics.errors.length ? `\n${fence(diagnostics.errors.slice(0, 15).join('\n'))}` : ''}` : 'not configured'}
+Tests: ${testSummary(diagnostics)}
+Compile diagnostics: ${diagnostics.ran && diagnostics.command ? `${diagnostics.errorCount} errors, ${diagnostics.warningCount} warnings${diagnostics.errors && diagnostics.errors.length ? `\n${fence(diagnostics.errors.slice(0, 15).join('\n'))}` : ''}` : 'not configured'}
 
 ${impl ? `The integrator's own account (a claim to verify, not evidence):\n${fence(`${impl.summary}\nExecution order: ${impl.executionOrder || '-'}\nTests: ${impl.testsRun}`)}` : ''}
 

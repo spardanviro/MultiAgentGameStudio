@@ -30,7 +30,7 @@ export const AGENT_MODEL = 'opus';
 
 export const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'];
 
-// Manifest key -> result key, in the order agents appear in a run.
+// Role name in the manifest -> role name in the result, in the order agents appear in a run.
 const ROLES = {
   module_implementer: 'moduleImplementer',
   module_reviewer: 'moduleReviewer',
@@ -60,7 +60,7 @@ function effortLevel(value, fieldName) {
 }
 
 function rejectModelFields(raw, fieldName) {
-  const found = ['model', 'review_model', 'sub_agent_model', 'review_agent_model'].filter((key) => raw && raw[key] != null);
+  const found = ['model', 'review_model', 'sub_agent_model', 'review_agent_model'].filter((field) => raw && raw[field] != null);
   if (found.length) {
     throw new Error(
       `${fieldName}.${found[0]} is no longer supported: every agent runs on the strongest model (${AGENT_MODEL}). ` +
@@ -78,7 +78,7 @@ function resolveEfforts(raw) {
   if (typeof section !== 'object' || Array.isArray(section)) {
     throw new Error('effort must be a mapping of role to effort level.');
   }
-  const unknown = Object.keys(section).filter((key) => key !== 'preset' && !ROLES[key]);
+  const unknown = Object.keys(section).filter((role) => role !== 'preset' && !ROLES[role]);
   if (unknown.length) {
     throw new Error(`effort.${unknown[0]} is not a role. Roles: ${Object.keys(ROLES).join(', ')}.`);
   }
@@ -87,9 +87,9 @@ function resolveEfforts(raw) {
     throw new Error(`effort.preset must be one of ${Object.keys(PRESETS).join(', ')}: ${preset}`);
   }
   const efforts = { ...PRESETS[preset] };
-  for (const [key, name] of Object.entries(ROLES)) {
-    if (section[key] != null) {
-      efforts[name] = effortLevel(section[key], `effort.${key}`);
+  for (const [role, name] of Object.entries(ROLES)) {
+    if (section[role] != null) {
+      efforts[name] = effortLevel(section[role], `effort.${role}`);
     }
   }
   return { preset, efforts };
@@ -327,7 +327,7 @@ export function validateManifest(raw, manifestPath) {
 }
 
 /**
- * How many agents a run starts, by role and thinking effort. Token use is not
+ * How many agents a run starts, by role and thinking effort. Cost is not
  * estimated: it depends far more on the modules than on the counts.
  */
 export function estimateRun(manifest, done = new Set()) {

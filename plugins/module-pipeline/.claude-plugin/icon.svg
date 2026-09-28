@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256" role="img" aria-label="Module Pipeline">
+  <rect width="256" height="256" rx="56" fill="#1f2230"/>
+  <!-- three module lanes -->
+  <rect x="40" y="52" width="64" height="36" rx="10" fill="#f6b26b"/>
+  <rect x="40" y="110" width="64" height="36" rx="10" fill="#6fa8dc"/>
+  <rect x="40" y="168" width="64" height="36" rx="10" fill="#93c47d"/>
+  <!-- lanes merging into the run branch -->
+  <path d="M104 70 C 140 70, 140 128, 168 128 M104 128 H168 M104 186 C 140 186, 140 128, 168 128"
+        fill="none" stroke="#c9ccd8" stroke-width="10" stroke-linecap="round"/>
+  <!-- merged commit -->
+  <circle cx="190" cy="128" r="24" fill="#c9ccd8"/>
+  <path d="M179 128 l8 8 l15 -16" fill="none" stroke="#1f2230" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

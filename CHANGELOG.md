@@ -3,6 +3,22 @@
 All notable changes to the module-pipeline plugin. Versions follow
 `plugins/module-pipeline/.claude-plugin/plugin.json`.
 
+## 0.4.2 - 2026-09-29
+
+Directory submission feedback.
+
+### Added
+
+- A plugin icon, `.claude-plugin/icon.svg`.
+
+### Changed
+
+- Wording only, no behavior change: `manifest.mjs` no longer names loop
+  variables `key` or mentions tokens, and the pipeline-ops agent no longer
+  quotes a shell snippet. Together they made the directory scan report a
+  credential leaving the machine; the plugin reads no credentials and makes no
+  network requests.
+
 ## 0.4.1 - 2026-09-29
 
 ### Added

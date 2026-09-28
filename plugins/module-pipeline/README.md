@@ -95,14 +95,79 @@ A module's own `effort` overrides `module_implementer` for that module. See
 /plugin install module-pipeline@multiagent-system
 ```
 
-## Files it writes in your project
+## What this plugin runs, reads and writes
 
-| Path | What |
-| --- | --- |
-| `docs/architecture.md`, `docs/module_layout.md`, `docs/module_contracts.md` | Architect output (committed) |
-| `tasks/task_manifest*.yaml`, `work/prompts/**` | Manifest and per-module prompts (committed) |
-| `work/modules/<id>/module_report.md`, `interface_request.md` | Written by module agents (committed with the module) |
-| `.multiagent/pipeline/` | Run state, worktree claims, patches, merge worktrees, result JSON, reports, PR drafts (git-ignored) |
+Everything the plugin does happens on your machine, inside the project you run
+it in. It has no server, sends no telemetry, and makes no network requests of
+its own.
+
+### Programs it starts
+
+- **`node <plugin>/scripts/pipeline.mjs <command>`**, the pipeline CLI. The
+  skills run it from your session and the workflows run it through the
+  `pipeline-ops` agent. Its only child processes are `git` (below) and the two
+  commands you put in the manifest.
+- **`git`** in the project, for these subcommands: `status`, `diff`, `log`,
+  `ls-files`, `rev-parse`, `rev-list`, `merge-base`, `config` (reading your
+  identity only), `switch -c` (creating the run branch), `add`, `commit`,
+  `apply` (applying a module's audited patch), `update-ref` (moving the run
+  branch), `branch` (listing; deleting agent branches and, in `clean`, run
+  branches), `worktree add/list/prune/remove`, and `checkout`, `reset --hard`
+  and `clean -fd` **only inside the plugin's own merge worktree** under
+  `.multiagent/pipeline/merge/`.
+- **Your `diagnostics.compile_command` and `diagnostics.test_command`**, exactly
+  as written in the manifest, in a checkout of the run branch.
+- **Claude Code agents** started by the workflows, all on the `opus` model:
+  one implementer and one reviewer per module, an integrator, a system
+  reviewer, and a relay agent per CLI step. They use Claude Code's normal
+  tools under your permission settings; implementers and the integrator also
+  run your project's build and tests.
+
+### Hooks it installs
+
+Both hooks run `node "${CLAUDE_PLUGIN_ROOT}/scripts/scope-hook.mjs"` and act
+only on this plugin's own `module-implementer` and `integrator` agents. For
+every other session and agent they exit immediately and change nothing.
+
+- **`PreToolUse` on Edit, Write, MultiEdit and NotebookEdit**: reads the
+  agent's claim file in `.multiagent/pipeline/claims/` and denies a write
+  outside the files its task may change, or any write before the agent has
+  claimed its worktree.
+- **`PostToolUse` on Bash**: runs `git diff --name-only` and
+  `git ls-files --others` in the agent's worktree and tells the agent about
+  files it left outside its scope. It never blocks or changes the command.
+
+### Files and branches it writes
+
+| What | Where | In git? |
+| --- | --- | --- |
+| Architect output (written by your session in `plan` / `rework`) | `docs/`, `tasks/task_manifest*.yaml`, `work/prompts/**`, `reports/rework/` | committed on the run branch after you confirm |
+| Module and integration reports | `work/modules/<id>/`, `work/integration/` | committed with the module |
+| One branch per run, one commit per accepted module | `multiagent-runs/<run-id>` | yes; your main branch is only touched by `finish`, after you pick merge or squash |
+| Run state, claims, patches, reports, diagnostics logs, PR drafts, merge worktree | `.multiagent/pipeline/` | no; added to `.git/info/exclude` |
+| Two exclude lines | `.git/info/exclude` | no |
+| Agent worktrees (created and locked by Claude Code, removed by the plugin after merging) | `.claude/worktrees/` | no |
+
+### What it deletes
+
+- An agent's worktree and branch, after its work is committed on the run
+  branch or found empty. A worktree whose work was rejected for writing out of
+  scope is kept for you to inspect.
+- With `/module-pipeline:clean`, and only after showing a dry run and getting
+  your confirmation: kept worktrees, stale claims, merge worktrees, and (with
+  `--branches`) run branches already merged into your main branch, using
+  `git branch -d`, which refuses unmerged branches.
+
+### Pushing and pull requests
+
+Nothing is pushed by default. `/module-pipeline:finish` offers
+`git push -u origin <run branch>` and `gh pr create` as one of its choices,
+and runs them only when you pick that choice and confirm the remote.
+
+### Dependencies
+
+None to install. `scripts/vendor/js-yaml.mjs` is a vendored copy of
+[js-yaml](https://github.com/nodeca/js-yaml) 4.2.0 (MIT, license alongside it).
 
 ## Development
 

@@ -3,6 +3,17 @@
 All notable changes to the module-pipeline plugin. Versions follow
 `plugins/module-pipeline/.claude-plugin/plugin.json`.
 
+## 0.4.1 - 2026-09-29
+
+### Added
+
+- `homepage` and `repository` in `plugin.json`.
+- A "What this plugin runs, reads and writes" section in the plugin README:
+  every program and git subcommand it starts, both hooks, the files and
+  branches it writes, what it deletes and when, and that it makes no network
+  requests of its own. Prepared for the Claude plugin directory, whose
+  security scan checks that a plugin's behavior is disclosed.
+
 ## 0.4.0 - 2026-09-29
 
 Fixes for what the first real end-to-end run (a 10-module browser game, 56

@@ -565,6 +565,11 @@ leftover worktrees.
 
 ## Files it writes
 
+For the complete list of what the plugin runs, reads, writes and deletes
+(every git subcommand, both hooks, and what it never does, such as network
+requests), see
+[What this plugin runs, reads and writes](plugins/module-pipeline/README.md#what-this-plugin-runs-reads-and-writes).
+
 | Path | What | In git? |
 | --- | --- | --- |
 | `docs/architecture.md`, `docs/module_layout.md`, `docs/module_contracts.md` | Architect's design | committed |

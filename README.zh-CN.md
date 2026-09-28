@@ -470,6 +470,9 @@ git switch main && git merge --no-ff multiagent-runs/run-001-r1
 
 ## 插件会写哪些文件
 
+插件会运行、读取、写入和删除的全部内容（每个用到的 git 子命令、两个 hook，以及它不会做的事，比如联网），
+见插件 README 的 [What this plugin runs, reads and writes](plugins/module-pipeline/README.md#what-this-plugin-runs-reads-and-writes)。
+
 | 路径 | 内容 | 是否进入 git |
 | --- | --- | --- |
 | `docs/architecture.md`、`docs/module_layout.md`、`docs/module_contracts.md` | 架构师的设计 | 提交 |

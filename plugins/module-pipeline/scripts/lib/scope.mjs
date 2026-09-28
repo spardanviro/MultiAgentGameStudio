@@ -3,6 +3,7 @@
 // it. The manifest validator, the PreToolUse hook and the audit all use these
 // helpers so they agree on what "allowed" means.
 import path from 'node:path';
+import { canonicalPath } from './paths.mjs';
 
 const FOLDER_GLOB_SUFFIX = /\/\*\*$/;
 
@@ -120,7 +121,8 @@ export function toRootRelative(root, filePath) {
   if (!filePath) {
     return null;
   }
-  const relative = path.relative(path.resolve(root), path.resolve(root, String(filePath)));
+  const base = canonicalPath(root);
+  const relative = path.relative(base, canonicalPath(path.resolve(base, String(filePath))));
   if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) {
     return null;
   }

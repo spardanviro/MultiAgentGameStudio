@@ -7,6 +7,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { canonicalPath, pathKey } from './paths.mjs';
 
 const LOCK_WAIT_MS = 120000;
 const LOCK_STALE_MS = 10 * 60 * 1000;
@@ -68,13 +69,8 @@ export function listRunIds(root) {
 
 // ---- claims -----------------------------------------------------------------
 
-function comparablePath(value) {
-  const resolved = path.resolve(value);
-  return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
-}
-
 export function claimPath(root, worktreeRoot) {
-  const hash = crypto.createHash('sha1').update(comparablePath(worktreeRoot)).digest('hex').slice(0, 16);
+  const hash = crypto.createHash('sha1').update(pathKey(worktreeRoot)).digest('hex').slice(0, 16);
   return path.join(pipelineDir(root), 'claims', `${hash}.json`);
 }
 
@@ -108,7 +104,7 @@ export function listClaims(root) {
  * @returns {{root: string, isLinkedWorktree: boolean, gitDir: string}|null}
  */
 export function findGitRoot(start) {
-  let dir = path.resolve(start);
+  let dir = canonicalPath(start);
   for (;;) {
     const dotGit = path.join(dir, '.git');
     let stat = null;
@@ -123,7 +119,7 @@ export function findGitRoot(start) {
     if (stat?.isFile()) {
       const match = fs.readFileSync(dotGit, 'utf8').match(/^gitdir:\s*(.+)\s*$/m);
       if (match) {
-        return { root: dir, isLinkedWorktree: true, gitDir: path.resolve(dir, match[1].trim()) };
+        return { root: dir, isLinkedWorktree: true, gitDir: canonicalPath(path.resolve(dir, match[1].trim())) };
       }
     }
     const parent = path.dirname(dir);
@@ -143,7 +139,7 @@ export function projectRootForWorktree(gitInfo) {
   const commonDir = fs.existsSync(commondirFile)
     ? path.resolve(gitInfo.gitDir, fs.readFileSync(commondirFile, 'utf8').trim())
     : path.resolve(gitInfo.gitDir, '..', '..');
-  return path.dirname(commonDir);
+  return canonicalPath(path.dirname(commonDir));
 }
 
 // ---- lock -------------------------------------------------------------------

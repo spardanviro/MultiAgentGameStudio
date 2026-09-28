@@ -11,9 +11,9 @@
 // is told at once about files outside it, while it can still undo them.
 // Errors here are ignored; the audit before merging is the final check.
 import fs from 'node:fs';
-import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { changedFiles } from './lib/git.mjs';
+import { samePath } from './lib/paths.mjs';
 import { auditChanges, createScopeMatcher, toRootRelative } from './lib/scope.mjs';
 import { findGitRoot, projectRootForWorktree, readClaim } from './lib/state.mjs';
 
@@ -114,9 +114,7 @@ function readStdin() {
   }
 }
 
-const self = fileURLToPath(import.meta.url);
-const invoked = process.argv[1] ? path.resolve(process.argv[1]) : '';
-if (process.platform === 'win32' ? invoked.toLowerCase() === self.toLowerCase() : invoked === self) {
+if (process.argv[1] && samePath(process.argv[1], fileURLToPath(import.meta.url))) {
   let input = null;
   try {
     input = JSON.parse(readStdin() || '{}');

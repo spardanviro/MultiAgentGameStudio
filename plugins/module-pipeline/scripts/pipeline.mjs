@@ -42,6 +42,7 @@ import {
   worktreeForBranch,
 } from './lib/git.mjs';
 import { estimateRun, findMissingPromptFiles, findTask, loadManifest, planWaves } from './lib/manifest.mjs';
+import { samePath } from './lib/paths.mjs';
 import { auditChanges } from './lib/scope.mjs';
 import {
   findGitRoot,
@@ -125,12 +126,6 @@ function taskInfo(task) {
     model: task.model || null,
     effort: task.effort || null,
   };
-}
-
-function samePath(a, b) {
-  const left = path.resolve(a);
-  const right = path.resolve(b);
-  return process.platform === 'win32' ? left.toLowerCase() === right.toLowerCase() : left === right;
 }
 
 function ensureProjectRepo(manifest) {

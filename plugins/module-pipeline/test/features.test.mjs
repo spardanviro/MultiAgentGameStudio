@@ -5,6 +5,7 @@ import path from 'node:path';
 import test from 'node:test';
 import { handle, watch } from '../scripts/scope-hook.mjs';
 import { validateManifest } from '../scripts/lib/manifest.mjs';
+import { canonicalPath, samePath } from '../scripts/lib/paths.mjs';
 import yaml from '../scripts/vendor/js-yaml.mjs';
 import { DEFAULT_MANIFEST, HOOK, PLUGIN_ROOT, cli, git, makeAgentWorktree, makeProject, write } from './helpers.mjs';
 import { runWorkflow } from './workflow-harness.mjs';
@@ -26,6 +27,16 @@ function projectOffRunBranch(manifestText) {
   git(project.root, 'switch', '-q', 'main');
   return project;
 }
+
+test('paths: canonical form keeps parts that do not exist yet and compares spellings of one folder as equal', () => {
+  const { root } = makeProject();
+  const future = canonicalPath(path.join(root, 'not', 'yet', 'file.gd'));
+  assert.equal(future, path.join(fs.realpathSync.native(root), 'not', 'yet', 'file.gd'));
+  assert.ok(samePath(root, path.join(root, 'src', '..')));
+  if (process.platform === 'win32') {
+    assert.ok(samePath(root.toUpperCase(), root.toLowerCase()));
+  }
+});
 
 test('manifest: presets fill defaults, explicit values win, and bad entries are rejected', () => {
   const economy = parse(DEFAULT_MANIFEST.replace('  model: sonnet', '  preset: economy'));

@@ -16,6 +16,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import yaml from '../vendor/js-yaml.mjs';
+import { canonicalPath } from './paths.mjs';
 import { entriesOverlap, normalizeGeneratedPattern, normalizeRelPath, normalizeScopeEntry } from './scope.mjs';
 
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
@@ -67,11 +68,8 @@ function asStringList(value) {
 }
 
 function resolveProjectRoot(rawRoot, manifestPath) {
-  if (rawRoot) {
-    return path.resolve(path.dirname(manifestPath), String(rawRoot));
-  }
   // Default layout: <root>/tasks/<manifest>.yaml
-  return path.resolve(path.dirname(manifestPath), '..');
+  return canonicalPath(path.resolve(path.dirname(manifestPath), rawRoot ? String(rawRoot) : '..'));
 }
 
 function uniqueScopes(entries, fieldName) {
@@ -258,7 +256,7 @@ export function validateManifest(raw, manifestPath) {
   }
   const generatedFiles = [...new Set(asStringList(raw.generated_files).map((entry) => normalizeGeneratedPattern(entry)))];
   return {
-    manifestPath: path.resolve(manifestPath),
+    manifestPath: canonicalPath(manifestPath),
     projectRoot: resolveProjectRoot(raw.project?.root, manifestPath),
     project: { name: String(raw.project?.name || 'Project'), spec: raw.project?.spec ? String(raw.project.spec) : null },
     runId,

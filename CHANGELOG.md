@@ -41,6 +41,13 @@ All notable changes to the module-pipeline plugin. Versions follow
 - `status` no longer lists the `*-result.json` files as runs, and reports the
   main checkout's branch and test failures.
 
+### Fixed
+
+- Windows paths are compared in their real long form. A project reached
+  through an 8.3 short name (such as `C:\Users\RUNNER~1\...`) or a different
+  letter case was treated as a different folder from what git reports, which
+  broke `prepare`, claims and the scope hook.
+
 ## 0.1.0 - 2026-09-27
 
 First release: planning, parallel module implementation in isolated

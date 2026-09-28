@@ -4,6 +4,7 @@
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
+import { canonicalPath, samePath } from './paths.mjs';
 
 // Paths that belong to the pipeline or the Claude harness, never to the user.
 const IGNORED_PREFIXES = ['.multiagent/', '.claude/worktrees/'];
@@ -32,7 +33,7 @@ export function getRunBranchName(runId) {
 }
 
 export function projectTopLevel(cwd) {
-  return path.resolve(git(cwd, ['rev-parse', '--show-toplevel']).trim());
+  return canonicalPath(git(cwd, ['rev-parse', '--show-toplevel']).trim());
 }
 
 export function head(cwd) {
@@ -109,12 +110,6 @@ export function ensureRunBranch(root, runBranch) {
   return { created: true, previousBranch: current || null };
 }
 
-function samePath(a, b) {
-  const left = path.resolve(a);
-  const right = path.resolve(b);
-  return process.platform === 'win32' ? left.toLowerCase() === right.toLowerCase() : left === right;
-}
-
 /** Make sure the run branch exists without moving the main checkout off its current branch. */
 export function ensureRunBranchExists(root, runBranch) {
   if (branchTip(root, runBranch)) {
@@ -131,7 +126,7 @@ export function worktreeForBranch(root, branch) {
     if (line.startsWith('worktree ')) {
       current = line.slice('worktree '.length);
     } else if (line === `branch refs/heads/${branch}` && current) {
-      return path.resolve(current);
+      return canonicalPath(current);
     }
   }
   return null;

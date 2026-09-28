@@ -1,5 +1,7 @@
 # MultiAgentGameStudio
 
+**English** | [简体中文](README.zh-CN.md)
+
 **module-pipeline** is a Claude Code plugin that builds a project from a written
 spec using a team of agents. The work is split into modules, and each module
 agent is fenced into its own folder. Agents write in parallel, each accepted

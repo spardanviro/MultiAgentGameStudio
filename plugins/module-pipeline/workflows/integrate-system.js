@@ -23,6 +23,11 @@ for (const value of [pluginRoot, manifest]) {
 const CLI = `node "${pluginRoot}/scripts/pipeline.mjs"`
 const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max']
 
+// Every agent runs on the strongest model; roles differ only in thinking
+// effort. Until prepare returns the manifest's settings, ops runs at low.
+let model = 'opus'
+let opsEffort = 'low'
+
 const OPS_SCHEMA = {
   type: 'object',
   required: ['exitCode', 'stdout'],
@@ -89,17 +94,14 @@ const fence = (text) =>
 
 const bullets = (items) => (items && items.length ? items.map((item) => `- ${item}`).join('\n') : '- (none)')
 
-function modelOptions(model, effort) {
-  const options = {}
-  if (model) options.model = model
-  if (effort && EFFORTS.includes(effort)) options.effort = effort
-  return options
+function agentOptions(effort) {
+  return EFFORTS.includes(effort) ? { model, effort } : { model }
 }
 
 async function ops(command, label, phaseTitle) {
   const reply = await agent(
     `Run this command exactly once and report its exit code and complete stdout verbatim:\n\n${command}`,
-    { agentType: 'module-pipeline:pipeline-ops', schema: OPS_SCHEMA, label, phase: phaseTitle, model: 'haiku', effort: 'low' },
+    { agentType: 'module-pipeline:pipeline-ops', schema: OPS_SCHEMA, label, phase: phaseTitle, ...agentOptions(opsEffort) },
   )
   if (!reply) {
     throw new Error(`${label}: the ops agent did not return`)
@@ -127,6 +129,8 @@ const plan = await ops(`${CLI} prepare "${manifest}" --stage integration`, 'prep
 if (!plan.ok) {
   return { stage: 'integration', status: 'blocked', reason: 'prepare_failed', errors: plan.errors || [plan.error] }
 }
+model = plan.model || model
+opsEffort = plan.efforts.pipelineOps
 
 let integration = { status: 'already_merged' }
 let impl = null
@@ -157,7 +161,7 @@ ${bullets(task.acceptance)}`,
       schema: IMPL_SCHEMA,
       label: 'integrate',
       phase: 'Integrate',
-      ...modelOptions(task.model, task.effort),
+      ...agentOptions(task.effort),
     },
   )
   integration = await ops(`${CLI} integrate-task --run ${plan.runId} --task integration`, 'merge:integration', 'Merge')
@@ -199,7 +203,7 @@ Number issues SYS-1, SYS-2, and so on.`,
     schema: SYSTEM_REVIEW_SCHEMA,
     label: 'system-review',
     phase: 'Review',
-    ...modelOptions(plan.reviewModel, plan.reviewEffort),
+    ...agentOptions(plan.efforts.systemReviewer),
   },
 )
 

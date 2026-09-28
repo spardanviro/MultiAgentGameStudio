@@ -99,9 +99,12 @@ codebase that splits cleanly into modules.
 - **Resumes.** Merged modules are recorded, so a rerun only does what is left.
 - **Leaves your checkout free.** You can switch the main checkout to another
   branch and keep working while a run is in progress.
+- **Runs every agent on the strongest model.** All roles use Opus (always the
+  newest one). They differ only in thinking effort, which you set per role:
+  implementers, module reviewers, integrator, system reviewer and ops agents.
+  Presets (`economy`, `balanced`, `quality`) set all of them at once.
 - **Shows the cost up front.** Planning ends with a count of the agents each
-  stage will start, by role and model, and a preset (`economy`, `balanced`,
-  `quality`) sets models for the whole run.
+  stage will start, by role and thinking effort.
 - **Wraps up.** `finish` summarizes the run branch, drafts a PR description,
   and merges or opens a PR when you say so; `clean` removes leftover worktrees
   and merged run branches.
@@ -140,7 +143,11 @@ Roles:
 | `module-reviewer` | one per merged module | no, read-only |
 | `integrator` | one agent in the integration stage | only `integration.allowed_files` |
 | `system-reviewer` | one per integration | no, read-only |
-| `pipeline-ops` | a small Haiku agent that runs the pipeline CLI | no, it only runs one command and reports the output |
+| `pipeline-ops` | a relay agent that runs the pipeline CLI | no, it only runs one command and reports the output |
+
+Every role runs on the same model, the newest Opus. What differs is the
+thinking effort, set per role in the manifest (see
+[Model and thinking effort](#model-and-thinking-effort)).
 
 ## Requirements
 
@@ -205,10 +212,11 @@ example:
 | enemy | `src/enemy/` | | 1 |
 | hud | `src/hud/` | player | 2 |
 
-It also tells you what the run will cost in agents, for example "`run`: 3
-implementers (sonnet / medium), 3 reviewers (opus / high), 5 ops agents
-(haiku); `integrate`: 3 more". If that is too much, ask it to switch to the
-`economy` preset or to give simple modules a cheaper model.
+It also tells you what the run will cost in agents, for example "all on Opus;
+`run`: 3 implementers (high), 3 reviewers (high), 5 ops agents (low);
+`integrate`: 3 more". You can change the thinking effort of any role here, for
+example "reviewers on medium, system reviewer on max", switch the preset, or
+give one hard module `xhigh`.
 
 If the plan looks right, say yes. It then commits the planning output on the new
 branch `multiagent-runs/run-001`.
@@ -275,11 +283,12 @@ the next free `run-NNN`.
   see committed files.
 - Scaffolds stubs, writes one self-contained prompt per module (with the
   contract section quoted in it), and writes the manifest.
-- Fills in the build and test commands, the files the engine generates, and a
-  model preset.
+- Fills in the build and test commands, the files the engine generates, and
+  an effort preset.
 - Validates the manifest and fixes it until it passes.
 - Shows the module table, the waves, and how many agents `run` and `integrate`
-  will start, by role and model.
+  will start, by role and thinking effort, and offers to change any role's
+  effort.
 - **Asks before committing.** With your yes, it switches to
   `multiagent-runs/<run-id>` and commits the planning output there.
 
@@ -395,12 +404,13 @@ project:
 run:
   id: run-001                       # becomes branch multiagent-runs/run-001
   goal: Playable single-level prototype
-defaults:
-  preset: balanced                  # economy | balanced | quality; the fields below override it
-  model: sonnet                     # module and integration agents (omit to inherit your session model)
-  effort: medium                    # low | medium | high | xhigh | max
-  review_model: opus                # reviewers
-  review_effort: high
+effort:                             # thinking effort per role: low | medium | high | xhigh | max
+  preset: balanced                  # economy | balanced | quality; the roles below override it
+  module_implementer: high
+  module_reviewer: high
+  integrator: high
+  system_reviewer: xhigh
+  pipeline_ops: low
 diagnostics:
   compile_command: ["npm", "run", "build"]   # argv list or shell string; null if none
   test_command: ["npm", "test"]              # whole test suite on the run branch; null if none
@@ -424,7 +434,7 @@ tasks:
     owned_folder: src/hud/
     prompt_file: work/prompts/hud.md
     depends_on: [player]             # starts after player is merged
-    model: haiku                     # per-task override
+    effort: medium                   # this module's implementer only
 integration:
   prompt_file: work/prompts/integration.md
   allowed_files:
@@ -444,21 +454,30 @@ Rules the validator enforces:
 - Globs are rejected. To grant a whole folder, give its path ending in `/`.
 - `generated_files` entries are a file-name pattern without `/` (only `*` as a
   wildcard, matched anywhere), a folder ending in `/`, or one exact path.
-- `defaults.preset` must be `economy`, `balanced` or `quality`.
+- Effort levels are `low`, `medium`, `high`, `xhigh` or `max`, and `effort:`
+  accepts only the five role names shown. `model` fields are rejected.
 
 A module can always write its owned folder, its test folder,
 `work/modules/<id>/module_report.md` and `work/modules/<id>/interface_request.md`.
 `allowed_files` only adds to that list, and is rarely needed.
 
-**Presets:**
+### Model and thinking effort
 
-| Preset | Module and integration agents | Reviewers |
-| --- | --- | --- |
-| `economy` | sonnet / low | sonnet / medium |
-| `balanced` | sonnet / medium | opus / high |
-| `quality` | opus / high | opus / xhigh |
+Every agent runs on the strongest model: `opus`, which always resolves to the
+newest Opus. There is deliberately no way to put a role on a weaker model.
+Roles differ only in thinking effort:
 
-Without a preset or explicit models, every agent inherits your session model.
+| Preset | module_implementer | module_reviewer | integrator | system_reviewer | pipeline_ops |
+| --- | --- | --- | --- | --- | --- |
+| `economy` | medium | medium | medium | high | low |
+| `balanced` (default) | high | high | high | high | low |
+| `quality` | xhigh | xhigh | xhigh | max | low |
+
+A role set under `effort:` overrides the preset, and a module's own `effort`
+overrides `module_implementer` for that module (likewise `integration.effort`
+for the integrator). `pipeline_ops` only relays commands, so `low` is enough;
+the first command of each workflow always runs at `low` because the manifest
+has not been read yet.
 
 **Generated files.** A generated file inside a module's scope is merged like
 any other (Godot `.uid` files belong in git). Outside the scope it is dropped
@@ -560,8 +579,9 @@ leftover worktrees.
   away parallelism.
 - **Tighten the contracts before running.** Most rework comes from vague public
   APIs. Reading `docs/module_contracts.md` before you approve the plan pays off.
-- **Pick models per task.** Start from a preset, then give simple data modules
-  a cheaper model and the tricky ones a stronger one.
+- **Spend thinking where it matters.** Start from a preset, then raise the
+  effort of the reviewers or of the hardest modules, and lower it for simple
+  data modules.
 - **Set a compile and a test command.** A typecheck or headless build plus the
   full test suite catch integration breakage that reviewers can miss.
 - **List generated files.** For engine projects, set `generated_files` so that

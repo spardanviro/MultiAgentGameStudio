@@ -23,6 +23,11 @@ for (const value of [pluginRoot, manifest]) {
 const CLI = `node "${pluginRoot}/scripts/pipeline.mjs"`
 const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max']
 
+// Every agent runs on the strongest model; roles differ only in thinking
+// effort. Until prepare returns the manifest's settings, ops runs at low.
+let model = 'opus'
+let opsEffort = 'low'
+
 const OPS_SCHEMA = {
   type: 'object',
   required: ['exitCode', 'stdout'],
@@ -76,17 +81,14 @@ const fence = (text) =>
 
 const bullets = (items) => (items && items.length ? items.map((item) => `- ${item}`).join('\n') : '- (none)')
 
-function modelOptions(model, effort) {
-  const options = {}
-  if (model) options.model = model
-  if (effort && EFFORTS.includes(effort)) options.effort = effort
-  return options
+function agentOptions(effort) {
+  return EFFORTS.includes(effort) ? { model, effort } : { model }
 }
 
 async function ops(command, label, phaseTitle) {
   const reply = await agent(
     `Run this command exactly once and report its exit code and complete stdout verbatim:\n\n${command}`,
-    { agentType: 'module-pipeline:pipeline-ops', schema: OPS_SCHEMA, label, phase: phaseTitle, model: 'haiku', effort: 'low' },
+    { agentType: 'module-pipeline:pipeline-ops', schema: OPS_SCHEMA, label, phase: phaseTitle, ...agentOptions(opsEffort) },
   )
   if (!reply) {
     throw new Error(`${label}: the ops agent did not return`)
@@ -146,6 +148,8 @@ const plan = await ops(`${CLI} prepare "${manifest}"`, 'prepare', 'Prepare')
 if (!plan.ok) {
   return { stage: 'modules', status: 'blocked', reason: 'prepare_failed', errors: plan.errors || [plan.error] }
 }
+model = plan.model || model
+opsEffort = plan.efforts.pipelineOps
 if (!plan.waves.length) {
   log(`Every module of ${plan.runId} is already merged.`)
 }
@@ -182,7 +186,7 @@ for (let index = 0; index < plan.waves.length; index += 1) {
         schema: IMPL_SCHEMA,
         label: `implement:${task.id}`,
         phase: 'Implement',
-        ...modelOptions(task.model, task.effort),
+        ...agentOptions(task.effort),
       }),
     (impl, task) => serialMerge(task).then((merge) => ({ impl, merge })),
     (result, task) =>
@@ -192,7 +196,7 @@ for (let index = 0; index < plan.waves.length; index += 1) {
             schema: REVIEW_SCHEMA,
             label: `review:${task.id}`,
             phase: 'Review',
-            ...modelOptions(plan.reviewModel, plan.reviewEffort),
+            ...agentOptions(plan.efforts.moduleReviewer),
           }).then((review) => ({ ...result, review }))
         : result,
   )

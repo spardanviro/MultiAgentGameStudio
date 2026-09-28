@@ -38,16 +38,28 @@ test('paths: canonical form keeps parts that do not exist yet and compares spell
   }
 });
 
-test('manifest: presets fill defaults, explicit values win, and bad entries are rejected', () => {
-  const economy = parse(DEFAULT_MANIFEST.replace('  model: sonnet', '  preset: economy'));
-  assert.deepEqual(
-    [economy.defaults.model, economy.defaults.effort, economy.defaults.reviewModel, economy.defaults.reviewEffort],
-    ['sonnet', 'low', 'sonnet', 'medium'],
-  );
-  const override = parse(DEFAULT_MANIFEST.replace('  model: sonnet', '  preset: quality\n  model: haiku'));
-  assert.equal(override.tasks[0].model, 'haiku');
-  assert.equal(override.defaults.reviewModel, 'opus');
-  assert.throws(() => parse(DEFAULT_MANIFEST.replace('  model: sonnet', '  preset: cheap')), /defaults\.preset must be one of economy, balanced, quality/);
+test('manifest: every role gets an effort from the preset unless set, and models cannot be chosen', () => {
+  const withEffort = (lines) => DEFAULT_MANIFEST.replace('effort:\n  module_implementer: medium\n', `effort:\n${lines}\n`);
+
+  const plain = parse(DEFAULT_MANIFEST.replace('effort:\n  module_implementer: medium\n', ''));
+  assert.equal(plain.model, 'opus');
+  assert.equal(plain.preset, 'balanced');
+  assert.deepEqual(plain.efforts, { moduleImplementer: 'high', moduleReviewer: 'high', integrator: 'high', systemReviewer: 'high', pipelineOps: 'low' });
+
+  const quality = parse(withEffort('  preset: quality\n  module_reviewer: medium'));
+  assert.equal(quality.efforts.moduleReviewer, 'medium', 'an explicit role wins over its preset');
+  assert.equal(quality.efforts.systemReviewer, 'max');
+  assert.equal(quality.tasks[0].effort, 'xhigh');
+  assert.equal(quality.integration.effort, 'xhigh');
+
+  const perTask = parse(DEFAULT_MANIFEST.replace('    acceptance: [Player moves]', '    acceptance: [Player moves]\n    effort: max'));
+  assert.deepEqual(perTask.tasks.map((task) => task.effort), ['max', 'medium', 'medium']);
+
+  assert.throws(() => parse(withEffort('  preset: cheap')), /effort\.preset must be one of economy, balanced, quality/);
+  assert.throws(() => parse(withEffort('  module_reviewer: extreme')), /effort\.module_reviewer must be one of low, medium, high, xhigh, max/);
+  assert.throws(() => parse(withEffort('  reviewer: high')), /effort\.reviewer is not a role/);
+  assert.throws(() => parse(DEFAULT_MANIFEST.replace('    acceptance: [Player moves]', '    acceptance: [Player moves]\n    model: haiku')), /player\.model is no longer supported/);
+  assert.throws(() => parse(DEFAULT_MANIFEST.replace('effort:\n  module_implementer: medium', 'defaults:\n  model: sonnet')), /defaults\.model is no longer supported/);
 
   const generated = parse(withGenerated(DEFAULT_MANIFEST, ['*.uid', './.godot/', 'export_presets.cfg']));
   assert.deepEqual(generated.generatedFiles, ['*.uid', '.godot/', 'export_presets.cfg']);
@@ -55,14 +67,15 @@ test('manifest: presets fill defaults, explicit values win, and bad entries are 
   assert.throws(() => parse(withGenerated(DEFAULT_MANIFEST, ['file?.tmp'])), /only "\*" wildcards/);
 });
 
-test('validate counts the agents a run and its integration will start', () => {
-  const { root, manifest } = makeProject(DEFAULT_MANIFEST.replace('  model: sonnet', '  preset: balanced'));
+test('validate counts the agents a run and its integration will start, by role and effort', () => {
+  const { root, manifest } = makeProject(DEFAULT_MANIFEST.replace('  module_implementer: medium', '  preset: economy'));
   const { json } = cli(root, 'validate', manifest);
-  assert.equal(json.estimate.preset, 'balanced');
+  assert.equal(json.estimate.model, 'opus');
+  assert.equal(json.estimate.preset, 'economy');
   assert.deepEqual(json.estimate.run, [
-    { role: 'module-implementer', count: 3, model: 'sonnet / medium' },
-    { role: 'module-reviewer', count: 3, model: 'opus / high' },
-    { role: 'pipeline-ops', count: 5, model: 'haiku / low' },
+    { role: 'module-implementer', count: 3, effort: 'medium' },
+    { role: 'module-reviewer', count: 3, effort: 'medium' },
+    { role: 'pipeline-ops', count: 5, effort: 'low' },
   ]);
   assert.deepEqual(json.estimate.integrate.map((row) => row.role), ['integrator', 'system-reviewer', 'pipeline-ops']);
   assert.equal(json.estimate.totalAgents, 16);

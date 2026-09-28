@@ -57,6 +57,24 @@ A Claude Code plugin that runs a spec-driven, multi-agent build:
 The hooks only act on the plugin's own `module-implementer` and `integrator`
 agents; other sessions and agents are never affected.
 
+## Model and thinking effort
+
+Every agent runs on the strongest model (`opus`, always the newest Opus).
+Roles differ only in thinking effort, set per role in the manifest:
+
+```yaml
+effort:
+  preset: balanced          # economy | balanced | quality
+  module_implementer: high
+  module_reviewer: high
+  integrator: high
+  system_reviewer: xhigh
+  pipeline_ops: low
+```
+
+A module's own `effort` overrides `module_implementer` for that module. See
+[manifest-schema.md](skills/plan/manifest-schema.md) for the preset table.
+
 ## Requirements
 
 - Claude Code with dynamic workflows enabled (all paid plans; on Pro, turn on

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // module-pipeline CLI. Every command prints one JSON object on stdout.
 //
-//   validate <manifest>                       check a manifest, plan waves, count agents
+//   validate <manifest>                       check a manifest, plan waves, count agents per role and effort
 //   commit-planning <manifest>                commit the architect's output on the run branch
 //   prepare <manifest> [--stage integration]  check the project, return pending waves / the integration task
 //   claim --run <id> --task <id>              (inside an agent worktree) bind the worktree to a task
@@ -123,8 +123,7 @@ function taskInfo(task) {
     allowedFiles: task.allowedFiles,
     acceptance: task.acceptance,
     dependsOn: task.dependsOn || [],
-    model: task.model || null,
-    effort: task.effort || null,
+    effort: task.effort,
   };
 }
 
@@ -236,8 +235,8 @@ function cmdPrepare({ positional, flags }) {
     mainCheckoutOnRunBranch: isMainCheckoutOn(root, state.runBranch),
     goal: manifest.goal,
     spec: manifest.project.spec,
-    reviewModel: manifest.defaults.reviewModel,
-    reviewEffort: manifest.defaults.reviewEffort,
+    model: manifest.model,
+    efforts: manifest.efforts,
   };
 
   if (flags.stage === 'integration') {

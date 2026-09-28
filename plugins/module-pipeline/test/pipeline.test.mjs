@@ -42,7 +42,7 @@ test('module defaults: report and request paths join allowed_files', () => {
     'work/modules/player/module_report.md',
     'work/modules/player/interface_request.md',
   ]);
-  assert.equal(player.model, 'sonnet');
+  assert.equal(player.effort, 'medium');
   assert.deepEqual(planWaves(manifest.tasks, new Set(['player'])).map((wave) => wave.map((task) => task.id)), [['enemy', 'hud']]);
 });
 

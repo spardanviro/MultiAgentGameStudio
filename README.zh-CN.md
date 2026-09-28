@@ -76,8 +76,10 @@ module-pipeline 把这些都变成由工具强制执行的规则，而不是只�
   并写出下一轮的 manifest。
 - **断点续跑。** 已合并的模块会被记录下来，重新运行时只做剩下的部分。
 - **不占用你的工作区。** 运行进行中，你可以把主工作区切到别的分支继续工作。
-- **事先说明成本。** 规划结束时会列出每个阶段要启动多少个智能体（按角色和模型分），还可以用预设
-  （`economy`、`balanced`、`quality`）统一设置整次运行的模型。
+- **所有智能体都用最强的模型。** 所有职责统一使用 Opus（始终是最新版），区别只在思考强度，由你按职责
+  分别设置：实现者、模块审查者、集成者、系统审查者和 ops 智能体。预设（`economy`、`balanced`、`quality`）
+  可以一次设好全部职责。
+- **事先说明成本。** 规划结束时会列出每个阶段要启动多少个智能体，按职责和思考强度分开列。
 - **收尾。** `finish` 汇总运行分支、起草 PR 描述，并在你同意后合并或开 PR；`clean` 清理残留的 worktree
   和已合并的运行分支。
 
@@ -115,7 +117,10 @@ flowchart TD
 | `module-reviewer` | 每个已合并模块一个 | 不能，只读 |
 | `integrator` | 集成阶段的一个智能体 | 只能写 `integration.allowed_files` |
 | `system-reviewer` | 每次集成一个 | 不能，只读 |
-| `pipeline-ops` | 运行流水线 CLI 的小型 Haiku 智能体 | 不能，只执行一条命令并原样汇报输出 |
+| `pipeline-ops` | 运行流水线 CLI 的转述智能体 | 不能，只执行一条命令并原样汇报输出 |
+
+所有职责都用同一个模型，也就是最新的 Opus。不同的只是思考强度，在 manifest 里按职责设置（见
+[模型与思考强度](#模型与思考强度)）。
 
 ## 环境要求
 
@@ -174,9 +179,9 @@ flowchart TD
 | enemy | `src/enemy/` | | 1 |
 | hud | `src/hud/` | player | 2 |
 
-它还会告诉你这次运行要启动多少个智能体，例如"`run`：3 个实现者（sonnet / medium）、3 个审查者
-（opus / high）、5 个 ops 智能体（haiku）；`integrate`：再加 3 个"。如果觉得太贵，可以让它改用 `economy`
-预设，或者给简单的模块换便宜的模型。
+它还会告诉你这次运行要启动多少个智能体，例如"全部使用 Opus；`run`：3 个实现者（high）、3 个审查者
+（high）、5 个 ops 智能体（low）；`integrate`：再加 3 个"。这时你可以调整任意职责的思考强度，比如"审查者
+用 medium，系统审查者用 max"，也可以换预设，或者给某个难的模块单独设成 `xhigh`。
 
 计划没问题就回答"是"。它会在新分支 `multiagent-runs/run-001` 上提交这些规划产物。
 
@@ -231,9 +236,10 @@ flowchart TD
 - 写架构、布局和契约文档。契约（公开 API、信号和事件、输入输出、禁止的依赖）是实现者和审查者共同遵守的标准。
 - 如果需求文档在仓库外，把它复制到 `docs/spec.md`，因为智能体只能看到已提交的文件。
 - 生成桩文件，为每个模块写一份独立完整的提示词（相关契约段落直接引用在其中），并写出 manifest。
-- 填好构建和测试命令、引擎会自动生成的文件，以及模型预设。
+- 填好构建和测试命令、引擎会自动生成的文件，以及思考强度预设。
 - 校验 manifest，直到通过为止。
-- 给你看模块表、批次，以及 `run` 和 `integrate` 各会启动多少个智能体（按角色和模型分）。
+- 给你看模块表、批次，以及 `run` 和 `integrate` 各会启动多少个智能体（按职责和思考强度分），并问你要不要
+  调整某个职责的思考强度。
 - **提交前先征求你同意。** 你同意后，它切换到 `multiagent-runs/<run-id>` 分支并在那里提交规划产物。
 
 ### `/module-pipeline:run [manifest]`
@@ -319,12 +325,13 @@ project:
 run:
   id: run-001                       # 对应分支 multiagent-runs/run-001
   goal: Playable single-level prototype
-defaults:
-  preset: balanced                  # economy | balanced | quality；下面的字段会覆盖预设
-  model: sonnet                     # 模块和集成智能体的模型（省略则沿用会话模型）
-  effort: medium                    # low | medium | high | xhigh | max
-  review_model: opus                # 审查者的模型
-  review_effort: high
+effort:                             # 各职责的思考强度：low | medium | high | xhigh | max
+  preset: balanced                  # economy | balanced | quality；下面各职责的设置会覆盖预设
+  module_implementer: high
+  module_reviewer: high
+  integrator: high
+  system_reviewer: xhigh
+  pipeline_ops: low
 diagnostics:
   compile_command: ["npm", "run", "build"]   # 参数数组或 shell 字符串；没有就写 null
   test_command: ["npm", "test"]              # 在运行分支上跑完整测试套件；没有就写 null
@@ -348,7 +355,7 @@ tasks:
     owned_folder: src/hud/
     prompt_file: work/prompts/hud.md
     depends_on: [player]             # player 合并后才开始
-    model: haiku                     # 单个任务覆盖默认模型
+    effort: medium                   # 只作用于这个模块的实现者
 integration:
   prompt_file: work/prompts/integration.md
   allowed_files:
@@ -367,20 +374,26 @@ integration:
 - 不支持通配符。要授权整个文件夹，写以 `/` 结尾的路径。
 - `generated_files` 的每一项可以是不含 `/` 的文件名模式（只支持 `*` 通配符，在任意目录下匹配）、以 `/`
   结尾的文件夹，或者一个确切的路径。
-- `defaults.preset` 只能是 `economy`、`balanced` 或 `quality`。
+- 思考强度只能是 `low`、`medium`、`high`、`xhigh` 或 `max`，`effort:` 下只接受上面列出的五个职责名。
+  写了 `model` 字段的 manifest 会被拒绝。
 
 模块始终可以写自己拥有的文件夹、测试文件夹、`work/modules/<id>/module_report.md` 和
 `work/modules/<id>/interface_request.md`。`allowed_files` 只是在此基础上追加，很少需要用到。
 
-**预设：**
+### 模型与思考强度
 
-| 预设 | 模块和集成智能体 | 审查者 |
-| --- | --- | --- |
-| `economy` | sonnet / low | sonnet / medium |
-| `balanced` | sonnet / medium | opus / high |
-| `quality` | opus / high | opus / xhigh |
+所有智能体都用最强的模型：`opus`，它始终指向最新的 Opus。插件有意不提供把某个职责换成较弱模型的选项，
+各职责之间只在思考强度上有区别：
 
-既没有预设也没有显式指定模型时，所有智能体沿用你会话的模型。
+| 预设 | module_implementer | module_reviewer | integrator | system_reviewer | pipeline_ops |
+| --- | --- | --- | --- | --- | --- |
+| `economy` | medium | medium | medium | high | low |
+| `balanced`（默认） | high | high | high | high | low |
+| `quality` | xhigh | xhigh | xhigh | max | low |
+
+在 `effort:` 下单独设置的职责会覆盖预设；模块自己的 `effort` 会覆盖这个模块的 `module_implementer`
+（`integration.effort` 对集成者同理）。`pipeline_ops` 只负责转述命令，`low` 就够了；每个工作流的第一条命令
+总是以 `low` 运行，因为那时还没读到 manifest。
 
 **生成文件。** 模块范围内的生成文件和普通文件一样被合并（Godot 的 `.uid` 文件本来就应该进 git）。范围外
 的生成文件会从合并中丢弃，而不是让模块失败。只登记真正由机器生成的文件：登记在这里的文件永远不会被判为
@@ -470,7 +483,7 @@ git switch main && git merge --no-ff multiagent-runs/run-001-r1
 - **只为真实的 API 调用声明依赖。** 每条 `depends_on` 都会多出一个批次，减少并行度。
 - **运行前先把契约写严。** 大部分返工来自含糊的公开 API。确认计划前花时间读一读 `docs/module_contracts.md`，
   很值得。
-- **按任务选模型。** 先选一个预设，再给简单的数据模块换便宜的模型，给难的模块换更强的模型。
+- **把思考用在关键处。** 先选一个预设，再调高审查者或最难模块的思考强度，简单的数据模块可以调低。
 - **设置编译命令和测试命令。** 类型检查或无界面构建，加上完整测试套件，能抓住审查者可能漏掉的集成问题。
 - **登记生成文件。** 引擎项目要设置 `generated_files`，这样导入缓存和 ID 文件永远不会让模块失败。
 

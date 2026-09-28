@@ -4,15 +4,17 @@
 //   version: 1
 //   project: { name, root?, spec? }
 //   run: { id, goal? }
-//   defaults: { preset?, model?, effort?, review_model?, review_effort? }
+//   effort: { preset?, module_implementer?, module_reviewer?, integrator?, system_reviewer?, pipeline_ops? }
 //   diagnostics: { compile_command?, test_command?: string | string[], timeout_ms? }
 //   generated_files: ["*.uid", ".godot/"]   # tool output dropped (not rejected) when outside a task's scope
 //   tasks:            # module tasks, one owned folder each
 //     - id, feature, owner?, owned_folder (or legacy owned_script),
 //       test_folder? | test_file?, prompt_file, module_report?,
-//       interface_request?, allowed_files?, depends_on?, acceptance?, model?, effort?
+//       interface_request?, allowed_files?, depends_on?, acceptance?, effort?
 //   integration:      # optional glue stage
-//     { id?, prompt_file, allowed_files, integration_report?, interface_request?, acceptance?, model?, effort? }
+//     { id?, prompt_file, allowed_files, integration_report?, interface_request?, acceptance?, effort? }
+//
+// Every agent runs on the strongest model; roles differ only in thinking effort.
 import fs from 'node:fs';
 import path from 'node:path';
 import yaml from '../vendor/js-yaml.mjs';
@@ -22,26 +24,72 @@ import { entriesOverlap, normalizeGeneratedPattern, normalizeRelPath, normalizeS
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 const INTEGRATION_ID = 'integration';
 
-// Model/effort defaults a manifest can start from; explicit defaults win.
-export const PRESETS = {
-  economy: { model: 'sonnet', effort: 'low', reviewModel: 'sonnet', reviewEffort: 'medium' },
-  balanced: { model: 'sonnet', effort: 'medium', reviewModel: 'opus', reviewEffort: 'high' },
-  quality: { model: 'opus', effort: 'high', reviewModel: 'opus', reviewEffort: 'xhigh' },
+// The model every pipeline agent runs on. The alias always resolves to the
+// newest Opus, so the pipeline follows model upgrades without edits.
+export const AGENT_MODEL = 'opus';
+
+export const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'];
+
+// Manifest key -> result key, in the order agents appear in a run.
+const ROLES = {
+  module_implementer: 'moduleImplementer',
+  module_reviewer: 'moduleReviewer',
+  integrator: 'integrator',
+  system_reviewer: 'systemReviewer',
+  pipeline_ops: 'pipelineOps',
 };
 
-function resolveDefaults(rawDefaults) {
-  const presetName = rawDefaults.preset ? String(rawDefaults.preset) : null;
-  if (presetName && !PRESETS[presetName]) {
-    throw new Error(`defaults.preset must be one of ${Object.keys(PRESETS).join(', ')}: ${presetName}`);
+export const DEFAULT_PRESET = 'balanced';
+
+// Effort per role; a role set explicitly in the manifest wins over its preset.
+export const PRESETS = {
+  economy: { moduleImplementer: 'medium', moduleReviewer: 'medium', integrator: 'medium', systemReviewer: 'high', pipelineOps: 'low' },
+  balanced: { moduleImplementer: 'high', moduleReviewer: 'high', integrator: 'high', systemReviewer: 'high', pipelineOps: 'low' },
+  quality: { moduleImplementer: 'xhigh', moduleReviewer: 'xhigh', integrator: 'xhigh', systemReviewer: 'max', pipelineOps: 'low' },
+};
+
+function effortLevel(value, fieldName) {
+  const level = String(value).trim();
+  if (!EFFORT_LEVELS.includes(level)) {
+    throw new Error(`${fieldName} must be one of ${EFFORT_LEVELS.join(', ')}: ${JSON.stringify(value)}`);
   }
-  const preset = presetName ? PRESETS[presetName] : {};
-  return {
-    preset: presetName,
-    model: rawDefaults.model || rawDefaults.sub_agent_model || preset.model || null,
-    effort: rawDefaults.effort || rawDefaults.sub_agent_effort || preset.effort || null,
-    reviewModel: rawDefaults.review_model || rawDefaults.review_agent_model || preset.reviewModel || null,
-    reviewEffort: rawDefaults.review_effort || rawDefaults.review_agent_effort || preset.reviewEffort || null,
-  };
+  return level;
+}
+
+function rejectModelFields(raw, fieldName) {
+  const found = ['model', 'review_model', 'sub_agent_model', 'review_agent_model'].filter((key) => raw && raw[key] != null);
+  if (found.length) {
+    throw new Error(
+      `${fieldName}.${found[0]} is no longer supported: every agent runs on the strongest model (${AGENT_MODEL}). ` +
+        'Set thinking effort per role under `effort:` instead.',
+    );
+  }
+}
+
+function resolveEfforts(raw) {
+  if (raw.defaults != null) {
+    rejectModelFields(raw.defaults, 'defaults');
+    throw new Error('defaults is no longer supported: set thinking effort per role under `effort:` (see manifest-schema.md).');
+  }
+  const section = raw.effort ?? {};
+  if (typeof section !== 'object' || Array.isArray(section)) {
+    throw new Error('effort must be a mapping of role to effort level.');
+  }
+  const unknown = Object.keys(section).filter((key) => key !== 'preset' && !ROLES[key]);
+  if (unknown.length) {
+    throw new Error(`effort.${unknown[0]} is not a role. Roles: ${Object.keys(ROLES).join(', ')}.`);
+  }
+  const preset = section.preset ? String(section.preset) : DEFAULT_PRESET;
+  if (!PRESETS[preset]) {
+    throw new Error(`effort.preset must be one of ${Object.keys(PRESETS).join(', ')}: ${preset}`);
+  }
+  const efforts = { ...PRESETS[preset] };
+  for (const [key, name] of Object.entries(ROLES)) {
+    if (section[key] != null) {
+      efforts[name] = effortLevel(section[key], `effort.${key}`);
+    }
+  }
+  return { preset, efforts };
 }
 
 function commandOrNull(value) {
@@ -81,11 +129,12 @@ function uniqueScopes(entries, fieldName) {
   return [...seen.values()];
 }
 
-function normalizeModuleTask(raw, index, defaults) {
+function normalizeModuleTask(raw, index, efforts) {
   if (!raw || typeof raw !== 'object') {
     throw new Error(`tasks[${index}] must be an object.`);
   }
   const id = safeId(raw.id, `tasks[${index}].id`);
+  rejectModelFields(raw, id);
   if (id === INTEGRATION_ID) {
     throw new Error(`Module task id "${INTEGRATION_ID}" is reserved for the integration stage.`);
   }
@@ -118,15 +167,15 @@ function normalizeModuleTask(raw, index, defaults) {
     ),
     dependsOn: asStringList(raw.depends_on),
     acceptance: asStringList(raw.acceptance),
-    model: raw.model ? String(raw.model) : defaults.model,
-    effort: raw.effort ? String(raw.effort) : defaults.effort,
+    effort: raw.effort != null ? effortLevel(raw.effort, `${id}.effort`) : efforts.moduleImplementer,
   };
 }
 
-function normalizeIntegration(raw, runId, defaults) {
+function normalizeIntegration(raw, runId, efforts) {
   if (!raw) {
     return null;
   }
+  rejectModelFields(raw, 'integration');
   const report = optionalPath(raw.integration_report, 'integration.integration_report') ||
     `work/integration/${runId}_integration_report.md`;
   const interfaceRequest = optionalPath(raw.interface_request, 'integration.interface_request') ||
@@ -145,8 +194,7 @@ function normalizeIntegration(raw, runId, defaults) {
     interfaceRequest,
     allowedFiles: uniqueScopes([report, interfaceRequest, ...extra], 'integration.allowed_files entry'),
     acceptance: asStringList(raw.acceptance),
-    model: raw.model ? String(raw.model) : defaults.model,
-    effort: raw.effort ? String(raw.effort) : defaults.effort,
+    effort: raw.effort != null ? effortLevel(raw.effort, 'integration.effort') : efforts.integrator,
   };
 }
 
@@ -235,11 +283,11 @@ export function validateManifest(raw, manifestPath) {
     throw new Error('Manifest version must be 1.');
   }
   const runId = safeId(raw.run?.id, 'run.id');
-  const defaults = resolveDefaults(raw.defaults || {});
+  const { preset, efforts } = resolveEfforts(raw);
   if (!Array.isArray(raw.tasks) || !raw.tasks.length) {
     throw new Error('Manifest must contain at least one module task under tasks.');
   }
-  const tasks = raw.tasks.map((task, index) => normalizeModuleTask(task, index, defaults));
+  const tasks = raw.tasks.map((task, index) => normalizeModuleTask(task, index, efforts));
   const seen = new Set();
   for (const task of tasks) {
     if (seen.has(task.id)) {
@@ -247,7 +295,7 @@ export function validateManifest(raw, manifestPath) {
     }
     seen.add(task.id);
   }
-  const integration = normalizeIntegration(raw.integration, runId, defaults);
+  const integration = normalizeIntegration(raw.integration, runId, efforts);
   validateOwnership(tasks, integration);
   planWaves(tasks);
 
@@ -261,7 +309,9 @@ export function validateManifest(raw, manifestPath) {
     project: { name: String(raw.project?.name || 'Project'), spec: raw.project?.spec ? String(raw.project.spec) : null },
     runId,
     goal: String(raw.run?.goal || ''),
-    defaults,
+    model: AGENT_MODEL,
+    preset,
+    efforts,
     diagnostics: {
       compileCommand: commandOrNull(raw.diagnostics?.compile_command),
       testCommand: commandOrNull(raw.diagnostics?.test_command),
@@ -274,35 +324,36 @@ export function validateManifest(raw, manifestPath) {
 }
 
 /**
- * How many agents a run starts, by role and model. Token use is not
+ * How many agents a run starts, by role and thinking effort. Token use is not
  * estimated: it depends far more on the modules than on the counts.
  */
 export function estimateRun(manifest, done = new Set()) {
-  const label = (model, effort) => `${model || 'session model'}${effort ? ` / ${effort}` : ''}`;
+  const { efforts } = manifest;
   const pending = manifest.tasks.filter((task) => !done.has(task.id));
-  const byModel = new Map();
+  const byEffort = new Map();
   for (const task of pending) {
-    const key = label(task.model, task.effort);
-    byModel.set(key, (byModel.get(key) || 0) + 1);
+    byEffort.set(task.effort, (byEffort.get(task.effort) || 0) + 1);
   }
-  const roles = [
-    ...[...byModel].map(([model, count]) => ({ role: 'module-implementer', count, model })),
-    { role: 'module-reviewer', count: pending.length, model: label(manifest.defaults.reviewModel, manifest.defaults.reviewEffort) },
-    { role: 'pipeline-ops', count: pending.length + 2, model: 'haiku / low' },
+  const run = [
+    ...[...byEffort].map(([effort, count]) => ({ role: 'module-implementer', count, effort })),
+    { role: 'module-reviewer', count: pending.length, effort: efforts.moduleReviewer },
+    { role: 'pipeline-ops', count: pending.length + 2, effort: efforts.pipelineOps },
   ].filter((row) => row.count > 0);
-  const integration = manifest.integration
+  const integrate = manifest.integration
     ? [
-        { role: 'integrator', count: 1, model: label(manifest.integration.model, manifest.integration.effort) },
-        { role: 'system-reviewer', count: 1, model: label(manifest.defaults.reviewModel, manifest.defaults.reviewEffort) },
-        { role: 'pipeline-ops', count: 3, model: 'haiku / low' },
+        { role: 'integrator', count: 1, effort: manifest.integration.effort },
+        { role: 'system-reviewer', count: 1, effort: efforts.systemReviewer },
+        { role: 'pipeline-ops', count: 3, effort: efforts.pipelineOps },
       ]
     : [];
   const sum = (rows) => rows.reduce((total, row) => total + row.count, 0);
   return {
-    preset: manifest.defaults.preset,
-    run: roles,
-    integrate: integration,
-    totalAgents: sum(roles) + sum(integration),
+    model: manifest.model,
+    preset: manifest.preset,
+    efforts,
+    run,
+    integrate,
+    totalAgents: sum(run) + sum(integrate),
   };
 }
 

@@ -38,8 +38,8 @@ project:
 run:
   id: run-001
   goal: Build the game
-defaults:
-  model: sonnet
+effort:
+  module_implementer: medium
 diagnostics:
   compile_command: null
 tasks:

@@ -67,8 +67,10 @@ glue. Keep your own reading of the existing code to what planning needs.
      Godot use `["*.uid", "*.import", ".godot/"]`; for Unity
      `["*.meta", "Library/", "Temp/", "Logs/"]`. Leave it out when nothing
      applies.
-   - `defaults.preset` to `balanced` unless the user asked for something
-     cheaper (`economy`) or stronger (`quality`).
+   - `effort.preset` to `balanced` unless the user asked for something
+     cheaper (`economy`) or more thorough (`quality`). Every agent runs on the
+     strongest model; never write a `model` field. Give a module its own
+     `effort` only when it is clearly harder (or much simpler) than the rest.
 7. **Validate** and fix until it passes:
 
    ```
@@ -77,12 +79,14 @@ glue. Keep your own reading of the existing code to what planning needs.
 
 8. **Hand over.** Show the user a table of modules (id, owned folder, depends
    on, acceptance count) and the waves from the validate output. Then show
-   the cost picture from `estimate` in the validate output: how many agents
-   `/module-pipeline:run` and `/module-pipeline:integrate` will start, by
-   role and model, and the preset in use. Say plainly that every implementer
-   and reviewer is a full agent session, and that switching `defaults.preset`
-   to `economy` or giving simple modules `model: haiku` lowers the cost. Then
-   ask whether to commit the planning output. Only if they agree, run:
+   the cost picture from `estimate` in the validate output: the model every
+   agent runs on, how many agents `/module-pipeline:run` and
+   `/module-pipeline:integrate` will start by role, and each role's thinking
+   effort and the preset. Say plainly that every implementer and reviewer is
+   a full agent session on the strongest model, and offer to change the
+   effort of any role (for example `effort.module_reviewer: medium`), switch
+   `effort.preset`, or give single modules their own `effort`. Then ask
+   whether to commit the planning output. Only if they agree, run:
 
    ```
    node "${CLAUDE_PLUGIN_ROOT}/scripts/pipeline.mjs" commit-planning tasks/task_manifest.yaml

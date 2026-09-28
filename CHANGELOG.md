@@ -3,6 +3,22 @@
 All notable changes to the module-pipeline plugin. Versions follow
 `plugins/module-pipeline/.claude-plugin/plugin.json`.
 
+## 0.3.0 - 2026-09-28
+
+### Changed (breaking manifest change)
+
+- Every agent now runs on the strongest model (`opus`, which resolves to the
+  newest Opus), including the reviewers and the pipeline-ops relay that used
+  Haiku. Roles differ only in thinking effort.
+- The `defaults:` section is replaced by `effort:`, with one level per role:
+  `module_implementer`, `module_reviewer`, `integrator`, `system_reviewer`
+  and `pipeline_ops`, plus `preset`. Presets now set efforts only:
+  `economy`, `balanced` (the default) and `quality`. A task's or the
+  integration's own `effort` still overrides its role.
+- `model` fields and the old `defaults:` section are rejected with a message
+  that points to `effort:`. Effort levels are validated.
+- `validate` reports agent counts by role and effort, plus the model.
+
 ## 0.2.0 - 2026-09-28
 
 ### Added

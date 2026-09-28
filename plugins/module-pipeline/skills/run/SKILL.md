@@ -34,7 +34,8 @@ user's own work; leave them alone.
 ## 2. Launch the workflow
 
 Tell the user how many modules will run, in how many waves, and how many
-agents that starts (from `estimate.run` in the validate output), then start
+agents that starts with which thinking effort (from `estimate.run` in the
+validate output; every agent runs on `estimate.model`), then start
 the workflow. Mention that they may switch the main checkout to another branch
 and keep working while it runs: agents start from the run branch, and merges
 go through a separate worktree when the main checkout is elsewhere. This

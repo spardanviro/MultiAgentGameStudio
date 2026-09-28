@@ -10,12 +10,13 @@ project:
 run:
   id: run-001                     # letters, digits, . _ - ; becomes branch multiagent-runs/run-001
   goal: One-sentence goal of this run
-defaults:
-  preset: balanced                # optional: economy | balanced | quality (see below); fields below override it
-  model: sonnet                   # model for module and integration agents (omit to inherit the session model)
-  effort: medium                  # low | medium | high | xhigh | max
-  review_model: opus              # model for reviewers
-  review_effort: high
+effort:                           # thinking effort per role: low | medium | high | xhigh | max
+  preset: balanced                # economy | balanced | quality (default balanced); roles below override it
+  module_implementer: high        # one agent per module
+  module_reviewer: high           # one read-only reviewer per merged module
+  integrator: high                # writes the glue code
+  system_reviewer: xhigh          # reviews the integrated result against the spec
+  pipeline_ops: low               # relays pipeline CLI commands
 diagnostics:
   compile_command: ["dotnet", "build"]   # argv list or a shell string; null if none
   test_command: ["dotnet", "test"]       # full test suite after modules merge; null if none
@@ -37,25 +38,32 @@ tasks:
     acceptance:
       - Taking damage lowers health and emits health_changed(old, new)
       - Health never drops below 0; reaching 0 emits died once
-    model: haiku                  # optional per-task override
-    effort: low
+    effort: xhigh                 # optional: this module's implementer only
 integration:                      # optional glue stage, run by /module-pipeline:integrate
   prompt_file: work/prompts/integration.md
   allowed_files:
     - src/game/                   # glue/composition only, never inside a module folder
   acceptance:
     - The game starts, spawns the player and enemies, and the HUD tracks health
+  effort: xhigh                   # optional: same as effort.integrator
 ```
 
-## Presets
+## Model and thinking effort
 
-| Preset | Module and integration agents | Reviewers |
-| --- | --- | --- |
-| `economy` | sonnet / low | sonnet / medium |
-| `balanced` | sonnet / medium | opus / high |
-| `quality` | opus / high | opus / xhigh |
+Every agent runs on the strongest model (`opus`, which always resolves to the
+newest Opus). Roles differ only in how hard they think. There is no `model`
+field; a manifest that sets one is rejected.
 
-Without a preset or explicit values, agents inherit the session model.
+| Preset | module_implementer | module_reviewer | integrator | system_reviewer | pipeline_ops |
+| --- | --- | --- | --- | --- | --- |
+| `economy` | medium | medium | medium | high | low |
+| `balanced` (default) | high | high | high | high | low |
+| `quality` | xhigh | xhigh | xhigh | max | low |
+
+Precedence, highest first: a task's own `effort`, the role under `effort:`,
+the preset. `pipeline_ops` only relays commands and needs no more than `low`;
+the first command of each workflow always runs at `low` because the manifest
+has not been read yet.
 
 ## Generated files
 
@@ -79,4 +87,6 @@ never cause a scope violation.
   module; `allowed_files` only adds to them. Globs are rejected; use a folder ending in `/`.
 - `generated_files` entries are a file-name pattern without `/` (only `*` as a wildcard), a folder
   ending in `/`, or one exact path.
-- `defaults.preset` must be `economy`, `balanced` or `quality`.
+- Effort levels are `low`, `medium`, `high`, `xhigh` or `max`; `effort.preset` is `economy`,
+  `balanced` or `quality`; `effort:` accepts only the five role names above.
+- `model` fields and the old `defaults:` section are rejected.

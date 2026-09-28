@@ -1,4 +1,4 @@
-# MultiAgentGameStudio
+# Module Pipeline
 
 [English](README.md) | **简体中文**
 
@@ -146,7 +146,7 @@ flowchart TD
 在 Claude Code 里执行：
 
 ```
-/plugin marketplace add spardanviro/MultiAgentGameStudio
+/plugin marketplace add spardanviro/module-pipeline
 /plugin install module-pipeline@multiagent-system
 ```
 

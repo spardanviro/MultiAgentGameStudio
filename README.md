@@ -177,7 +177,7 @@ thinking effort, set per role in the manifest (see
 In Claude Code:
 
 ```
-/plugin marketplace add spardanviro/MultiAgentGameStudio
+/plugin marketplace add spardanviro/module-pipeline
 /plugin install module-pipeline@multiagent-system
 ```
 

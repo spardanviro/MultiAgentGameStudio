@@ -91,7 +91,7 @@ A module's own `effort` overrides `module_implementer` for that module. See
 ## Install from this repository
 
 ```
-/plugin marketplace add spardanviro/MultiAgentGameStudio
+/plugin marketplace add spardanviro/module-pipeline
 /plugin install module-pipeline@multiagent-system
 ```
 

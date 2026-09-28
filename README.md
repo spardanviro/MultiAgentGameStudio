@@ -50,9 +50,11 @@ of something a prompt merely asks for:
 | Problem | What the plugin does |
 | --- | --- |
 | Agents overwrite each other | Every module owns exactly one folder. The manifest is rejected if two modules own the same or nested folders. |
-| An agent reaches outside its area | A `PreToolUse` hook blocks edits outside the module's allowed files *while the agent works*, and an audit rejects out-of-scope shell writes before merging. |
+| An agent reaches outside its area | A `PreToolUse` hook blocks edits outside the module's allowed files *while the agent works*. After every shell command the agent is told about any file it left outside its scope, and an audit rejects whatever is still there before merging. |
+| Engine files trip the scope check | Files the engine writes on its own (Godot `.uid` and `.import` files, caches) can be listed as generated; outside a module's scope they are dropped instead of failing the module. |
 | Changes are hard to trace or undo | Each accepted module is one commit on a dedicated run branch, `multiagent-runs/<run-id>`. Your main branch is never touched. |
-| Agents work from stale or invisible state | A run refuses to start with uncommitted changes. Later waves start from the run branch, so they see the modules merged before them. |
+| Agents work from stale or invisible state | Planning output must be committed before a run. Every agent is moved to the run branch tip when it starts, so later waves see the modules merged before them. |
+| You are locked out of your repo during a run | The main checkout can go back to any branch while agents work. Merges and checks then happen in a separate worktree. |
 | Reviews are shallow or skipped | Every module gets a read-only adversarial reviewer, and the integrated system gets a system reviewer that checks spec coverage. |
 | Failures pile up with no plan | Failures and blocking review items become a structured rework manifest, decided by the architect and approved by you. |
 
@@ -71,18 +73,23 @@ codebase that splits cleanly into modules.
   dependency *waves*: a module starts only after the modules it depends on are
   merged.
 - **Enforces write scopes.** Before writing anything, each agent must *claim*
-  its worktree for its task. After that, the hook only lets it edit its own
-  folder, its test folder and its report files.
+  its worktree for its task, which also moves the worktree to the run branch
+  tip. After that, the hook only lets it edit its own folder, its test folder
+  and its report files, and it is warned after any shell command that left a
+  file outside them.
 - **Audits and commits.** When an agent finishes, its diff is checked against
   its scope. In-scope work is applied and committed on the run branch, with your
-  git hooks still running. Out-of-scope work is refused and the worktree is kept
-  so you can inspect it.
+  git hooks still running. Generated files outside the scope are dropped.
+  Anything else outside the scope is refused and the worktree is kept so you
+  can inspect it.
 - **Reviews every module.** A read-only reviewer checks the acceptance
   criteria, the contract, the tests and obvious bugs. It returns structured
   rework items with a severity and a flag saying whether each one blocks
   integration.
 - **Runs diagnostics.** If you configure a build or typecheck command, it runs
-  after the modules merge, and its errors and warnings are counted.
+  after the modules merge and its errors and warnings are counted. If you
+  configure a test command, the whole suite runs too, catching cross-module
+  breakage that each module's own tests miss.
 - **Integrates.** A separate stage writes the glue code that composes the
   modules, under the same scope rules. A system reviewer then scores the result
   against every requirement in the spec.
@@ -90,6 +97,14 @@ codebase that splits cleanly into modules.
   the same module, create a new one, change a contract, defer, or ask you) and
   writes the next run's manifest.
 - **Resumes.** Merged modules are recorded, so a rerun only does what is left.
+- **Leaves your checkout free.** You can switch the main checkout to another
+  branch and keep working while a run is in progress.
+- **Shows the cost up front.** Planning ends with a count of the agents each
+  stage will start, by role and model, and a preset (`economy`, `balanced`,
+  `quality`) sets models for the whole run.
+- **Wraps up.** `finish` summarizes the run branch, drafts a PR description,
+  and merges or opens a PR when you say so; `clean` removes leftover worktrees
+  and merged run branches.
 
 ## How a run works
 
@@ -100,18 +115,18 @@ flowchart TD
     M -->|you approve| B[commit on branch<br/>multiagent-runs/run-001]
     B --> R["/module-pipeline:run"]
     subgraph wave [each dependency wave, modules in parallel]
-        I[module agent<br/>isolated worktree] --> C[claim + scoped writes<br/>hook enforced]
-        C --> A[scope audit]
+        I[module agent<br/>isolated worktree] --> C[claim + scoped writes<br/>hooks enforce and warn]
+        C --> A[scope audit<br/>generated files dropped]
         A -->|in scope| K[commit on run branch]
         A -->|out of scope| V[violation<br/>worktree kept]
         K --> RV[read-only module review]
     end
     R --> wave
-    wave --> D[diagnostics]
+    wave --> D[diagnostics<br/>build + test suite]
     D --> G{gate}
     G -->|passed| INT["/module-pipeline:integrate<br/>glue + system review"]
     G -->|anything else| RW["/module-pipeline:rework"]
-    INT -->|passed| MERGE[you review and merge the run branch]
+    INT -->|passed| MERGE["/module-pipeline:finish<br/>you merge or open a PR"]
     INT -->|anything else| RW
     RW -->|next manifest run-001-r1| R
 ```
@@ -190,6 +205,11 @@ example:
 | enemy | `src/enemy/` | | 1 |
 | hud | `src/hud/` | player | 2 |
 
+It also tells you what the run will cost in agents, for example "`run`: 3
+implementers (sonnet / medium), 3 reviewers (opus / high), 5 ops agents
+(haiku); `integrate`: 3 more". If that is too much, ask it to switch to the
+`economy` preset or to give simple modules a cheaper model.
+
 If the plan looks right, say yes. It then commits the planning output on the new
 branch `multiagent-runs/run-001`.
 
@@ -202,7 +222,8 @@ branch `multiagent-runs/run-001`.
 `player` and `enemy` are built in parallel. `hud` starts once `player` is merged,
 from a branch that already contains `player`. Watch progress with `/workflows`.
 At the end you get a table of modules with their status and an overall gate
-status.
+status. While it runs you can `git switch main` and keep working; the run does
+not need the main checkout.
 
 **4. Integrate** (if the gate is `passed` and the manifest has an integration
 section):
@@ -218,9 +239,21 @@ section):
 /module-pipeline:run tasks/task_manifest.run-001-r1.yaml
 ```
 
-**6. Merge.** Review branch `multiagent-runs/run-001` (or the last rework
-branch) and merge it into your main branch yourself. The plugin never merges
-into your main branch.
+**6. Finish:**
+
+```
+/module-pipeline:finish run-001-r1
+```
+
+It summarizes the last run branch against `main`, drafts a PR description, and
+asks whether to merge, squash, open a pull request, or leave it. Nothing is
+merged without your yes.
+
+**7. Clean up:**
+
+```
+/module-pipeline:clean run-001 --branches
+```
 
 At any point, `/module-pipeline:status` shows where every run stands.
 
@@ -242,7 +275,11 @@ the next free `run-NNN`.
   see committed files.
 - Scaffolds stubs, writes one self-contained prompt per module (with the
   contract section quoted in it), and writes the manifest.
+- Fills in the build and test commands, the files the engine generates, and a
+  model preset.
 - Validates the manifest and fixes it until it passes.
+- Shows the module table, the waves, and how many agents `run` and `integrate`
+  will start, by role and model.
 - **Asks before committing.** With your yes, it switches to
   `multiagent-runs/<run-id>` and commits the planning output there.
 
@@ -250,24 +287,30 @@ the next free `run-NNN`.
 
 The default manifest is `tasks/task_manifest.yaml`.
 
-1. Validates the manifest. If there are uncommitted changes, it lists them and
-   asks whether to commit them as planning output, because agents cannot see
-   uncommitted files.
+1. Validates the manifest. If the main checkout is on the run branch and has
+   uncommitted changes, it lists them and asks whether to commit them as
+   planning output, because agents cannot see uncommitted files. On any other
+   branch, uncommitted files are your own work and are left alone.
 2. Starts the `module-pipeline-implement` workflow. For each wave, and for each
    module in the wave in parallel:
    - **Implement:** a `module-implementer` agent in a fresh worktree claims the
-     task, writes code and tests inside its folder, runs the tests, and writes
+     task (which moves the worktree to the run branch tip), writes code and
+     tests inside its folder, runs the tests, and writes
      `work/modules/<id>/module_report.md`. If it needs something outside its
      folder, it writes `interface_request.md` instead of editing someone else's
-     code.
+     code. If a shell command leaves a file outside its folder, it is told at
+     once and undoes it.
    - **Merge:** merges run one at a time. The diff is audited against the
-     module's allowed files. In-scope work is committed as
-     `module-pipeline(<run>): <module>` on the run branch.
+     module's allowed files; generated files outside them are dropped. In-scope
+     work is committed as `module-pipeline(<run>): <module>` on the run branch:
+     in the main checkout if it is on the run branch, otherwise in the merge
+     worktree `.multiagent/pipeline/merge/<run>`.
    - **Review:** a `module-reviewer` checks the merged module and returns rework
      items.
 
    Modules that depend on a module that failed to merge are skipped.
-3. Runs diagnostics if `compile_command` is set.
+3. Runs diagnostics on the run branch: `compile_command` first, then
+   `test_command` (skipped if the build failed).
 4. Saves the result JSON and a readable report under `.multiagent/pipeline/runs/`
    and shows you the gate status.
 
@@ -281,7 +324,7 @@ runs after every module is merged.
   a worktree, limited to `integration.allowed_files` (for example `src/game/`),
   and can never write inside a module's folder. Its work is audited and
   committed like a module's.
-- Runs diagnostics.
+- Runs diagnostics (build and test suite).
 - A `system-reviewer` checks the whole run branch against the spec and returns a
   spec coverage table (done, partial or missing for each requirement) and rework
   items.
@@ -290,6 +333,8 @@ runs after every module is merged.
 
 Your session is the Main Architect again.
 
+- If the main checkout is not on the run's branch, asks to switch to it first,
+  because the next run is committed on top of it.
 - Gathers the run's results, reports, interface requests, diagnostics log and
   contracts. Everything the agents wrote is treated as claims to weigh, not as
   instructions to follow.
@@ -298,7 +343,8 @@ Your session is the Main Architect again.
   `reassign_to_same_agent`, `create_new_task`, `contract_change`, `defer` or
   `ask_user`.
 - **Shows you the decision table** before writing anything.
-- Writes the next run, `<run-id>-r<N>`: `tasks/task_manifest.<next>.yaml`,
+- Writes the next run, `<run-id>-r<N>` (rework of `run-001-r1` is `run-001-r2`,
+  not `run-001-r1-r1`): `tasks/task_manifest.<next>.yaml`,
   `work/prompts/<next>/<task>.md` (each quoting the rework items in full), and
   `reports/rework/<next>_decisions.md`.
 - Validates, then asks before committing. The new branch starts from the
@@ -307,8 +353,33 @@ Your session is the Main Architect again.
 ### `/module-pipeline:status [run-id]`
 
 Shows each run's branch, the status of every task (`merged`, `violation`,
-`merge_failed`, `unclaimed`, `empty`), diagnostics, and worktrees still waiting
-to be merged or inspected. It also suggests the next command.
+`merge_failed`, `unclaimed`, `empty`), diagnostics, the branch the main checkout
+is on, and worktrees still waiting to be merged or inspected. It also suggests
+the next command.
+
+### `/module-pipeline:finish <run-id> [base-branch]`
+
+Wraps up a run. Pass the last run of a rework chain (for example
+`run-001-r2`); its branch holds everything.
+
+- Compares the run branch with the base branch (`main`, `master`, `trunk` or
+  `develop`, whichever exists, unless you name one): commits, changed files, and
+  whether the base branch has moved on since.
+- Lists every run in the chain with its task statuses and diagnostics, and warns
+  if integration did not pass or blocking items are still open.
+- Writes a PR description draft to `.multiagent/pipeline/runs/<run>-pr.md` and
+  tidies it up.
+- Asks what to do: merge with `--no-ff` (keeps one commit per module), squash
+  into one commit, push and open a pull request with `gh`, or nothing. It does
+  only what you pick, and stops on conflicts instead of resolving them.
+
+### `/module-pipeline:clean [run-id] [--branches]`
+
+Removes what runs leave behind: worktrees kept after a `violation` or
+`merge_failed` (with the rejected work in them), claims whose worktree is gone,
+and merge worktrees. With `--branches` it also deletes run branches that are
+already merged into the main branch. A run id limits it to that run and its
+rework runs. It always shows a dry run and asks before deleting anything.
 
 ## The task manifest
 
@@ -325,13 +396,19 @@ run:
   id: run-001                       # becomes branch multiagent-runs/run-001
   goal: Playable single-level prototype
 defaults:
+  preset: balanced                  # economy | balanced | quality; the fields below override it
   model: sonnet                     # module and integration agents (omit to inherit your session model)
   effort: medium                    # low | medium | high | xhigh | max
   review_model: opus                # reviewers
   review_effort: high
 diagnostics:
   compile_command: ["npm", "run", "build"]   # argv list or shell string; null if none
-  timeout_ms: 300000
+  test_command: ["npm", "test"]              # whole test suite on the run branch; null if none
+  timeout_ms: 300000                         # per command
+generated_files:                    # engine/tool output: dropped, not rejected, outside a task's scope
+  - "*.uid"
+  - "*.import"
+  - .godot/
 tasks:
   - id: player
     feature: Player movement and health
@@ -365,10 +442,30 @@ Rules the validator enforces:
 - `depends_on` must name existing modules and must not form a cycle.
 - Every `prompt_file` must exist.
 - Globs are rejected. To grant a whole folder, give its path ending in `/`.
+- `generated_files` entries are a file-name pattern without `/` (only `*` as a
+  wildcard, matched anywhere), a folder ending in `/`, or one exact path.
+- `defaults.preset` must be `economy`, `balanced` or `quality`.
 
 A module can always write its owned folder, its test folder,
 `work/modules/<id>/module_report.md` and `work/modules/<id>/interface_request.md`.
 `allowed_files` only adds to that list, and is rarely needed.
+
+**Presets:**
+
+| Preset | Module and integration agents | Reviewers |
+| --- | --- | --- |
+| `economy` | sonnet / low | sonnet / medium |
+| `balanced` | sonnet / medium | opus / high |
+| `quality` | opus / high | opus / xhigh |
+
+Without a preset or explicit models, every agent inherits your session model.
+
+**Generated files.** A generated file inside a module's scope is merged like
+any other (Godot `.uid` files belong in git). Outside the scope it is dropped
+from the merge rather than failing the module. Only list files that really are
+machine-written: anything listed can never count as a scope violation.
+Suggested lists: Godot `["*.uid", "*.import", ".godot/"]`, Unity
+`["*.meta", "Library/", "Temp/", "Logs/"]`.
 
 ## Results and statuses
 
@@ -376,27 +473,26 @@ A module can always write its owned folder, its test folder,
 
 | Status | Meaning | Next |
 | --- | --- | --- |
-| `passed` | Every module merged, no blocking review item, diagnostics clean | `integrate`, or merge the branch |
+| `passed` | Every module merged, no blocking review item, diagnostics clean | `integrate`, or `finish` |
 | `rework_required` | Some review item blocks integration or is critical | `rework` |
 | `modules_failed` | Some module did not merge (see reasons below) | `rework` |
-| `diagnostics_failed` | The build or typecheck command failed | `rework` |
+| `diagnostics_failed` | The build command reported errors, or the test suite failed | `rework` |
 | `blocked` | The run could not start, for example an invalid manifest or uncommitted changes | fix and rerun |
 
 Per-module merge results:
 
 | Result | Meaning |
 | --- | --- |
-| `merged` | Audited, committed on the run branch |
+| `merged` | Audited, committed on the run branch (`dropped` lists generated files left out) |
 | `violation` | Files written outside the module's scope; nothing merged; worktree kept for inspection |
 | `merge_failed` | The patch did not apply, or a git hook rejected the commit (the patch is reverted) |
-| `empty` | The agent produced no changes |
+| `empty` | The agent produced no changes, or only generated files outside its scope |
 | `unclaimed` | The agent never claimed its worktree |
 | `skipped` | A module it depends on did not merge |
 
 **Integration stage** (`/module-pipeline:integrate`): `passed`,
 `rework_required`, `integration_failed`, `diagnostics_failed`, `review_missing`
-or `blocked`. `passed` means the run branch is ready for you to review and
-merge.
+or `blocked`. `passed` means the run branch is ready for `finish`.
 
 Both stages write `.multiagent/pipeline/runs/<run>-<stage>-result.json` (the raw
 workflow result) and `<run>-<stage>-report.md` (a readable report with the
@@ -425,16 +521,19 @@ of the previous run's branch. Repeat until the gate passes.
 ## Finishing a run
 
 When integration passes, the finished work is on the last run branch, one commit
-per module plus the integration commit:
+per module plus the integration commit. `/module-pipeline:finish <run-id>`
+walks you through it: a summary, a PR description, and the merge or pull
+request of your choice. If you prefer to do it by hand:
 
 ```
 git log --oneline main..multiagent-runs/run-001-r1
 git diff main...multiagent-runs/run-001-r1
-git switch main && git merge multiagent-runs/run-001-r1
+git switch main && git merge --no-ff multiagent-runs/run-001-r1
 ```
 
-Review and merge it the same way you would a pull request. The plugin leaves
-this step to you.
+Either way, nothing reaches your main branch without your say-so. Afterwards,
+`/module-pipeline:clean run-001 --branches` removes the run branches and any
+leftover worktrees.
 
 ## Files it writes
 
@@ -446,7 +545,8 @@ this step to you.
 | `work/modules/<id>/module_report.md`, `interface_request.md` | Written by module agents | committed with the module |
 | `work/integration/<run>_*.md` | Integration report and requests | committed |
 | `reports/rework/<run>_decisions.md` | Rework decisions | committed |
-| `.multiagent/pipeline/` | Run state, worktree claims, patches, lock, result JSON, reports, diagnostics logs | ignored (added to `.git/info/exclude`) |
+| `.multiagent/pipeline/` | Run state, worktree claims, patches, lock, result JSON, reports, diagnostics logs, PR drafts | ignored (added to `.git/info/exclude`) |
+| `.multiagent/pipeline/merge/<run>/` | Merge worktree, used only while the main checkout is on another branch | ignored |
 | `.claude/worktrees/` | Agent worktrees, created and removed by Claude Code | ignored |
 
 ## Tips for good results
@@ -460,22 +560,31 @@ this step to you.
   away parallelism.
 - **Tighten the contracts before running.** Most rework comes from vague public
   APIs. Reading `docs/module_contracts.md` before you approve the plan pays off.
-- **Pick models per task.** Use a cheaper model for simple data modules, and the
-  session model or Opus for the tricky ones and for reviewers.
-- **Set a compile command.** A typecheck or headless build catches integration
-  breakage that reviewers can miss.
+- **Pick models per task.** Start from a preset, then give simple data modules
+  a cheaper model and the tricky ones a stronger one.
+- **Set a compile and a test command.** A typecheck or headless build plus the
+  full test suite catch integration breakage that reviewers can miss.
+- **List generated files.** For engine projects, set `generated_files` so that
+  import caches and ID files never fail a module.
 
 ## Troubleshooting
 
-**"uncommitted changes" when starting a run.** Agents start from the last
-commit. Commit your changes, or let the command commit them as planning output
-when it asks.
+**"uncommitted changes" when starting a run.** The main checkout is on the run
+branch with uncommitted files, which agents cannot see. Commit them, let the
+command commit them as planning output when it asks, or switch to another
+branch if they are unrelated work of yours.
 
-**A module ends in `violation`.** The agent wrote outside its folder, usually
-through the shell. Nothing was merged. Look at the kept worktree under
+**A module ends in `violation`.** The agent left files outside its folder even
+after being warned. Nothing was merged. Look at the kept worktree under
 `.claude/worktrees/` to see what it tried to do. `rework` normally turns this
-into an interface request or a contract change rather than a wider scope. To
-clean up afterwards, run `git worktree remove <path>`.
+into an interface request or a contract change rather than a wider scope. If
+the files are engine output (such as Godot `.uid` or `.import` files), add them
+to `generated_files` instead. `/module-pipeline:clean` removes the worktree
+once you are done with it.
+
+**Leftover worktrees and branches pile up.** Run `/module-pipeline:clean`
+(add `--branches` after merging) to remove kept worktrees, stale claims, merge
+worktrees and merged run branches.
 
 **The hook denies every write.** Agents must run the `claim` step first; the
 implementer prompt tells them to. If it keeps happening, check that the agent is
@@ -488,7 +597,10 @@ commands to `permissions.allow` in the project's `.claude/settings.json` (see
 
 **`merge_failed` with a hook message.** Your project's git hooks (lint,
 formatting) rejected the commit. The patch was reverted; the reason is in the
-result, and the next rework run can fix it.
+result, and the next rework run can fix it. If it only happens while the main
+checkout is on another branch, the hooks probably need installed dependencies
+(such as `node_modules`) that the merge worktree does not have: switch the main
+checkout back to the run branch and rerun.
 
 **The workflow was interrupted.** Rerun the same command. Modules that already
 merged are skipped.
@@ -497,24 +609,30 @@ merged are skipped.
 
 ```
 .claude-plugin/marketplace.json        marketplace listing
+.github/workflows/test.yml             CI: tests on Linux, Windows, macOS; plugin validate
+CHANGELOG.md                           release notes
 plugins/module-pipeline/
   .claude-plugin/plugin.json           plugin manifest
-  skills/                              the five /module-pipeline:* commands
+  skills/                              the seven /module-pipeline:* commands
   agents/                              implementer, integrator, reviewers, ops
   workflows/                           implement-modules.js, integrate-system.js
-  hooks/hooks.json                     PreToolUse scope guard
+  hooks/hooks.json                     PreToolUse scope guard, PostToolUse shell check
   scripts/pipeline.mjs                 CLI: validate, commit-planning, prepare, claim,
-                                       integrate-task, diagnostics, status
-  scripts/scope-hook.mjs               the hook
+                                       integrate-task, diagnostics, status, clean, finish
+  scripts/scope-hook.mjs               both hooks
   scripts/lib/                         manifest, scope, git, state, diagnostics
   test/                                node:test suites and a workflow harness
 ```
 
-Run the tests (no install step needed; js-yaml is vendored):
+Run the tests (Node 22 or newer; no install step needed, js-yaml is vendored):
 
 ```
 npm test
 ```
+
+CI runs the same suite on Linux, Windows and macOS, and checks the marketplace
+and the plugin with `claude plugin validate`. See [CHANGELOG.md](CHANGELOG.md)
+for what changed in each version.
 
 The workflow tests run both workflow scripts with emulated runtime globals. The
 ops agent executes the real CLI, and stand-in implementers act on real git

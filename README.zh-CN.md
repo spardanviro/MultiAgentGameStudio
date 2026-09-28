@@ -44,9 +44,11 @@ module-pipeline 把这些都变成由工具强制执行的规则，而不是只�
 | 问题 | 插件的做法 |
 | --- | --- |
 | 智能体互相覆盖代码 | 每个模块只拥有一个文件夹。两个模块拥有相同或嵌套的文件夹时，manifest 校验直接失败。 |
-| 智能体越界修改 | `PreToolUse` hook 在智能体**工作过程中**拦截它对允许范围之外文件的编辑；通过 shell 写出的越界文件会在合并前被审计拒绝。 |
+| 智能体越界修改 | `PreToolUse` hook 在智能体**工作过程中**拦截它对允许范围之外文件的编辑。每条 shell 命令执行后，只要留下了越界文件，智能体会立刻收到提醒；合并前的审计会拒绝仍然存在的越界文件。 |
+| 引擎自动生成的文件触发越界 | 引擎自己写出的文件（Godot 的 `.uid`、`.import` 文件、各种缓存）可以登记为生成文件；它们出现在模块范围之外时会被丢弃，而不是让整个模块失败。 |
 | 改动难以追溯和撤销 | 每个通过的模块是专用运行分支 `multiagent-runs/<run-id>` 上的一个提交，你的主分支不会被动到。 |
-| 智能体基于过期或看不到的状态工作 | 有未提交的改动时拒绝启动运行。后面批次的模块从运行分支出发，能看到之前已合并的模块。 |
+| 智能体基于过期或看不到的状态工作 | 运行前必须先提交规划产物。每个智能体开始时都会被移到运行分支的最新提交，所以后面批次的模块能看到之前已合并的模块。 |
+| 运行期间仓库被占住 | 智能体工作时，主工作区可以切回任何分支继续干活。合并和检查会改在一个单独的 worktree 里进行。 |
 | 审查流于形式或被跳过 | 每个模块都有一个只读的对抗式审查者；集成后的整个系统还有一个系统审查者，逐条核对需求覆盖情况。 |
 | 失败越积越多，没有处理计划 | 失败和阻塞性的审查问题会变成结构化的返工清单，由架构师逐条决定处理方式，并经你确认。 |
 
@@ -59,18 +61,25 @@ module-pipeline 把这些都变成由工具强制执行的规则，而不是只�
   划分、写架构和接口契约文档、生成桩文件、给每个模块写一份提示词，并产出一份通过校验的任务清单（manifest）。
 - **并行实现模块。** 一个 Claude Code 动态工作流（dynamic workflow）为每个模块启动一个智能体，各自在独立的
   git worktree 里工作。模块按依赖关系分**批次**（wave）运行：一个模块要等它依赖的模块都合并后才开始。
-- **强制限定写入范围。** 每个智能体写任何东西之前，必须先为自己的任务**认领**（claim）所在的 worktree。
-  之后 hook 只允许它编辑自己的文件夹、测试文件夹和报告文件。
+- **强制限定写入范围。** 每个智能体写任何东西之前，必须先为自己的任务**认领**（claim）所在的 worktree，
+  认领时 worktree 会被移到运行分支的最新提交。之后 hook 只允许它编辑自己的文件夹、测试文件夹和报告文件；
+  任何 shell 命令留下了越界文件，它都会立刻收到提醒。
 - **审计并提交。** 智能体完成后，它的改动会按写入范围逐一核对。范围内的改动被应用并提交到运行分支（你项目
-  的 git hooks 照常运行）；越界的改动被拒绝，worktree 保留下来供你检查。
+  的 git hooks 照常运行）；范围外的生成文件被丢弃；其他越界改动被拒绝，worktree 保留下来供你检查。
 - **审查每个模块。** 只读审查者检查验收标准、接口契约、测试和明显的缺陷，返回结构化的返工项，每项都带严重
   程度，并标明是否阻塞集成。
-- **运行诊断。** 如果配置了构建或类型检查命令，模块合并后会运行它，并统计错误和警告数量。
+- **运行诊断。** 如果配置了构建或类型检查命令，模块合并后会运行它，并统计错误和警告数量。如果配置了测试命令，
+  还会跑一遍完整的测试套件，抓住各模块自己的测试发现不了的跨模块问题。
 - **集成。** 单独的集成阶段编写把各模块组装起来的胶水代码，遵守同样的范围规则；随后系统审查者对照需求文档
   逐条打分。
 - **规划返工。** 架构师把每个失败项变成一个决定（交回同一模块返工、新建模块、修改契约、暂缓，或者问你），
   并写出下一轮的 manifest。
 - **断点续跑。** 已合并的模块会被记录下来，重新运行时只做剩下的部分。
+- **不占用你的工作区。** 运行进行中，你可以把主工作区切到别的分支继续工作。
+- **事先说明成本。** 规划结束时会列出每个阶段要启动多少个智能体（按角色和模型分），还可以用预设
+  （`economy`、`balanced`、`quality`）统一设置整次运行的模型。
+- **收尾。** `finish` 汇总运行分支、起草 PR 描述，并在你同意后合并或开 PR；`clean` 清理残留的 worktree
+  和已合并的运行分支。
 
 ## 一次运行的流程
 
@@ -81,18 +90,18 @@ flowchart TD
     M -->|你确认| B[提交到分支<br/>multiagent-runs/run-001]
     B --> R["/module-pipeline:run"]
     subgraph wave [每个依赖批次，模块并行]
-        I[模块智能体<br/>独立 worktree] --> C[认领 + 受限写入<br/>hook 强制]
-        C --> A[范围审计]
+        I[模块智能体<br/>独立 worktree] --> C[认领 + 受限写入<br/>hook 拦截并提醒]
+        C --> A[范围审计<br/>丢弃生成文件]
         A -->|范围内| K[提交到运行分支]
         A -->|越界| V[violation<br/>保留 worktree]
         K --> RV[只读模块审查]
     end
     R --> wave
-    wave --> D[诊断]
+    wave --> D[诊断<br/>构建 + 测试套件]
     D --> G{关卡}
     G -->|passed| INT["/module-pipeline:integrate<br/>胶水代码 + 系统审查"]
     G -->|其他状态| RW["/module-pipeline:rework"]
-    INT -->|passed| MERGE[你审阅并合并运行分支]
+    INT -->|passed| MERGE["/module-pipeline:finish<br/>由你合并或开 PR"]
     INT -->|其他状态| RW
     RW -->|下一轮 manifest run-001-r1| R
 ```
@@ -165,6 +174,10 @@ flowchart TD
 | enemy | `src/enemy/` | | 1 |
 | hud | `src/hud/` | player | 2 |
 
+它还会告诉你这次运行要启动多少个智能体，例如"`run`：3 个实现者（sonnet / medium）、3 个审查者
+（opus / high）、5 个 ops 智能体（haiku）；`integrate`：再加 3 个"。如果觉得太贵，可以让它改用 `economy`
+预设，或者给简单的模块换便宜的模型。
+
 计划没问题就回答"是"。它会在新分支 `multiagent-runs/run-001` 上提交这些规划产物。
 
 **3. 实现模块：**
@@ -174,7 +187,8 @@ flowchart TD
 ```
 
 `player` 和 `enemy` 并行开发。`player` 合并后 `hud` 才开始，而且它的起点分支里已经包含了 `player`。
-用 `/workflows` 查看进度。结束时你会看到每个模块的状态表和一个总体关卡状态。
+用 `/workflows` 查看进度。结束时你会看到每个模块的状态表和一个总体关卡状态。运行期间你可以
+`git switch main` 继续干自己的活，运行过程不需要占用主工作区。
 
 **4. 集成**（关卡状态为 `passed`，且 manifest 里有 integration 段时）：
 
@@ -189,8 +203,20 @@ flowchart TD
 /module-pipeline:run tasks/task_manifest.run-001-r1.yaml
 ```
 
-**6. 合并。** 审阅 `multiagent-runs/run-001` 分支（或最后一轮返工的分支），然后由你自己合并到主分支。
-插件永远不会替你合并到主分支。
+**6. 收尾：**
+
+```
+/module-pipeline:finish run-001-r1
+```
+
+它把最后一轮的运行分支和 `main` 做对比、起草 PR 描述，然后问你是合并、压缩合并、开 pull request，还是先
+不动。没有你的同意，什么都不会合并。
+
+**7. 清理：**
+
+```
+/module-pipeline:clean run-001 --branches
+```
 
 任何时候都可以用 `/module-pipeline:status` 查看每次运行的进度。
 
@@ -205,24 +231,29 @@ flowchart TD
 - 写架构、布局和契约文档。契约（公开 API、信号和事件、输入输出、禁止的依赖）是实现者和审查者共同遵守的标准。
 - 如果需求文档在仓库外，把它复制到 `docs/spec.md`，因为智能体只能看到已提交的文件。
 - 生成桩文件，为每个模块写一份独立完整的提示词（相关契约段落直接引用在其中），并写出 manifest。
+- 填好构建和测试命令、引擎会自动生成的文件，以及模型预设。
 - 校验 manifest，直到通过为止。
+- 给你看模块表、批次，以及 `run` 和 `integrate` 各会启动多少个智能体（按角色和模型分）。
 - **提交前先征求你同意。** 你同意后，它切换到 `multiagent-runs/<run-id>` 分支并在那里提交规划产物。
 
 ### `/module-pipeline:run [manifest]`
 
 默认 manifest 是 `tasks/task_manifest.yaml`。
 
-1. 校验 manifest。如果有未提交的改动，列出来并问你是否作为规划产物提交，因为智能体看不到未提交的文件。
+1. 校验 manifest。如果主工作区在运行分支上并且有未提交的改动，它会列出来并问你是否作为规划产物提交，
+   因为智能体看不到未提交的文件。如果主工作区在别的分支上，未提交的文件是你自己的工作，不会被碰。
 2. 启动 `module-pipeline-implement` 工作流。每个批次里的各个模块并行执行：
-   - **实现：** `module-implementer` 智能体在一个新 worktree 里认领任务，在自己的文件夹里写代码和测试，
-     运行测试，并写 `work/modules/<id>/module_report.md`。如果需要本文件夹之外的东西，它会写
-     `interface_request.md` 提出接口请求，而不是去改别人的代码。
-   - **合并：** 合并逐个进行。改动按模块允许的文件范围审计，范围内的改动以
-     `module-pipeline(<run>): <module>` 为提交信息提交到运行分支。
+   - **实现：** `module-implementer` 智能体在一个新 worktree 里认领任务（worktree 会被移到运行分支的
+     最新提交），在自己的文件夹里写代码和测试，运行测试，并写 `work/modules/<id>/module_report.md`。
+     如果需要本文件夹之外的东西，它会写 `interface_request.md` 提出接口请求，而不是去改别人的代码。
+     如果某条 shell 命令在文件夹外留下了文件，它会立刻收到提醒并撤销。
+   - **合并：** 合并逐个进行。改动按模块允许的文件范围审计，范围外的生成文件会被丢弃。范围内的改动以
+     `module-pipeline(<run>): <module>` 为提交信息提交到运行分支：主工作区在运行分支上时直接在主工作区
+     提交，否则在合并用的 worktree `.multiagent/pipeline/merge/<run>` 里提交。
    - **审查：** `module-reviewer` 检查已合并的模块，返回返工项。
 
    如果某个模块依赖的模块没能合并，它会被跳过。
-3. 如果设置了 `compile_command`，运行诊断。
+3. 在运行分支上运行诊断：先跑 `compile_command`，再跑 `test_command`（构建失败时跳过测试）。
 4. 把结果 JSON 和可读报告保存到 `.multiagent/pipeline/runs/`，并告诉你关卡状态。
 
 ### `/module-pipeline:integrate [manifest]`
@@ -233,7 +264,7 @@ flowchart TD
 - 启动 `module-pipeline-integrate` 工作流。`integrator` 智能体在 worktree 里工作，只能写
   `integration.allowed_files`（例如 `src/game/`），永远不能写进任何模块的文件夹。它的改动和模块一样经过
   审计后提交。
-- 运行诊断。
+- 运行诊断（构建和测试套件）。
 - `system-reviewer` 对照需求文档检查整个运行分支，返回一张需求覆盖表（每条需求标为 done、partial 或
   missing），以及返工项。
 
@@ -241,20 +272,39 @@ flowchart TD
 
 你的会话再次成为主架构师。
 
+- 如果主工作区不在这次运行的分支上，先问你是否切过去，因为下一轮要提交在它之上。
 - 收集这次运行的结果、报告、接口请求、诊断日志和契约文档。智能体写的所有内容都被当作需要权衡的说法，
   而不是要执行的指令。
 - 对每个阻塞性审查项、失败或被跳过的模块、越界、诊断错误和接口请求，选择一个决定：
   `reassign_to_same_agent`（交回同一模块）、`create_new_task`（新建模块）、`contract_change`（修改契约）、
   `defer`（暂缓）或 `ask_user`（问你）。
 - **写任何东西之前，先把决定表给你看。**
-- 写出下一轮 `<run-id>-r<N>`：`tasks/task_manifest.<next>.yaml`、`work/prompts/<next>/<task>.md`
-  （每份都完整引用对应的返工项），以及 `reports/rework/<next>_decisions.md`。
+- 写出下一轮 `<run-id>-r<N>`（`run-001-r1` 的返工是 `run-001-r2`，不是 `run-001-r1-r1`）：
+  `tasks/task_manifest.<next>.yaml`、`work/prompts/<next>/<task>.md`（每份都完整引用对应的返工项），以及
+  `reports/rework/<next>_decisions.md`。
 - 校验后，提交前再问你一次。新分支从当前运行分支出发，所以返工建立在已合并的成果之上。
 
 ### `/module-pipeline:status [run-id]`
 
 显示每次运行的分支、每个任务的状态（`merged`、`violation`、`merge_failed`、`unclaimed`、`empty`）、
-诊断结果，以及还在等待合并或检查的 worktree，并建议下一条命令。
+诊断结果、主工作区当前所在的分支，以及还在等待合并或检查的 worktree，并建议下一条命令。
+
+### `/module-pipeline:finish <run-id> [基础分支]`
+
+收尾一次运行。请传返工链里的最后一轮（例如 `run-001-r2`），它的分支包含了全部成果。
+
+- 把运行分支和基础分支对比（默认取 `main`、`master`、`trunk`、`develop` 中存在的那个，也可以自己指定）：
+  列出提交、改动的文件，以及基础分支在此期间是否又有了新提交。
+- 列出返工链中每一轮的任务状态和诊断结果；如果集成没通过或还有未解决的阻塞项，会给出警告。
+- 把 PR 描述草稿写到 `.multiagent/pipeline/runs/<run>-pr.md`，并加以整理。
+- 问你怎么处理：用 `--no-ff` 合并（保留每个模块一个提交）、压缩成一个提交、推送并用 `gh` 开
+  pull request，或者先不动。它只做你选的那一项；遇到冲突会停下来，不会自己解决。
+
+### `/module-pipeline:clean [run-id] [--branches]`
+
+清理运行留下的东西：因 `violation` 或 `merge_failed` 保留下来的 worktree（里面是被拒绝的改动）、对应
+worktree 已经不存在的认领记录，以及合并用的 worktree。加上 `--branches` 时，还会删除已经合并进主分支的
+运行分支。指定 run id 时只清理这次运行及其返工轮次。它总是先演示一遍要删什么，经你确认后才真正删除。
 
 ## 任务清单 manifest
 
@@ -270,13 +320,19 @@ run:
   id: run-001                       # 对应分支 multiagent-runs/run-001
   goal: Playable single-level prototype
 defaults:
+  preset: balanced                  # economy | balanced | quality；下面的字段会覆盖预设
   model: sonnet                     # 模块和集成智能体的模型（省略则沿用会话模型）
   effort: medium                    # low | medium | high | xhigh | max
   review_model: opus                # 审查者的模型
   review_effort: high
 diagnostics:
   compile_command: ["npm", "run", "build"]   # 参数数组或 shell 字符串；没有就写 null
-  timeout_ms: 300000
+  test_command: ["npm", "test"]              # 在运行分支上跑完整测试套件；没有就写 null
+  timeout_ms: 300000                         # 每条命令的超时
+generated_files:                    # 引擎/工具的产物：出现在任务范围外时丢弃，而不是判为越界
+  - "*.uid"
+  - "*.import"
+  - .godot/
 tasks:
   - id: player
     feature: Player movement and health
@@ -309,9 +365,27 @@ integration:
 - `depends_on` 必须引用存在的模块，并且不能形成循环。
 - 每个 `prompt_file` 都必须存在。
 - 不支持通配符。要授权整个文件夹，写以 `/` 结尾的路径。
+- `generated_files` 的每一项可以是不含 `/` 的文件名模式（只支持 `*` 通配符，在任意目录下匹配）、以 `/`
+  结尾的文件夹，或者一个确切的路径。
+- `defaults.preset` 只能是 `economy`、`balanced` 或 `quality`。
 
 模块始终可以写自己拥有的文件夹、测试文件夹、`work/modules/<id>/module_report.md` 和
 `work/modules/<id>/interface_request.md`。`allowed_files` 只是在此基础上追加，很少需要用到。
+
+**预设：**
+
+| 预设 | 模块和集成智能体 | 审查者 |
+| --- | --- | --- |
+| `economy` | sonnet / low | sonnet / medium |
+| `balanced` | sonnet / medium | opus / high |
+| `quality` | opus / high | opus / xhigh |
+
+既没有预设也没有显式指定模型时，所有智能体沿用你会话的模型。
+
+**生成文件。** 模块范围内的生成文件和普通文件一样被合并（Godot 的 `.uid` 文件本来就应该进 git）。范围外
+的生成文件会从合并中丢弃，而不是让模块失败。只登记真正由机器生成的文件：登记在这里的文件永远不会被判为
+越界。参考清单：Godot 用 `["*.uid", "*.import", ".godot/"]`，Unity 用
+`["*.meta", "Library/", "Temp/", "Logs/"]`。
 
 ## 结果与状态
 
@@ -319,25 +393,25 @@ integration:
 
 | 状态 | 含义 | 下一步 |
 | --- | --- | --- |
-| `passed` | 所有模块已合并，没有阻塞性审查项，诊断通过 | `integrate`，或合并分支 |
+| `passed` | 所有模块已合并，没有阻塞性审查项，诊断通过 | `integrate`，或 `finish` |
 | `rework_required` | 有审查项阻塞集成，或属于 critical 级别 | `rework` |
 | `modules_failed` | 有模块没能合并（原因见下表） | `rework` |
-| `diagnostics_failed` | 构建或类型检查命令失败 | `rework` |
+| `diagnostics_failed` | 构建命令报了错，或测试套件失败 | `rework` |
 | `blocked` | 运行无法启动，例如 manifest 无效或有未提交的改动 | 修复后重新运行 |
 
 单个模块的合并结果：
 
 | 结果 | 含义 |
 | --- | --- |
-| `merged` | 审计通过，已提交到运行分支 |
+| `merged` | 审计通过，已提交到运行分支（`dropped` 列出被丢弃的生成文件） |
 | `violation` | 写了范围之外的文件；什么都没合并；保留 worktree 供检查 |
 | `merge_failed` | 补丁无法应用，或 git hook 拒绝了提交（补丁已撤回） |
-| `empty` | 智能体没有产生任何改动 |
+| `empty` | 智能体没有产生任何改动，或者只改了范围外的生成文件 |
 | `unclaimed` | 智能体始终没有认领自己的 worktree |
 | `skipped` | 它依赖的某个模块没能合并 |
 
 **集成阶段**（`/module-pipeline:integrate`）的状态有 `passed`、`rework_required`、`integration_failed`、
-`diagnostics_failed`、`review_missing` 和 `blocked`。`passed` 表示运行分支已经可以交给你审阅并合并。
+`diagnostics_failed`、`review_missing` 和 `blocked`。`passed` 表示运行分支可以进入 `finish` 了。
 
 两个阶段都会写出 `.multiagent/pipeline/runs/<run>-<stage>-result.json`（工作流的原始结果）和
 `<run>-<stage>-report.md`（可读报告，包含审查者给出的返工项）。
@@ -363,14 +437,17 @@ integration:
 ## 收尾：合并运行分支
 
 集成通过后，最终成果在最后一轮的运行分支上：每个模块一个提交，外加集成提交。
+`/module-pipeline:finish <run-id>` 会带你走完这一步：汇总、PR 描述，以及你选择的合并方式或 pull request。
+如果想手动操作：
 
 ```
 git log --oneline main..multiagent-runs/run-001-r1
 git diff main...multiagent-runs/run-001-r1
-git switch main && git merge multiagent-runs/run-001-r1
+git switch main && git merge --no-ff multiagent-runs/run-001-r1
 ```
 
-像审阅 pull request 一样审阅并合并它。这一步由你自己完成。
+无论哪种方式，没有你的同意，都不会有任何东西进入你的主分支。完成后，用
+`/module-pipeline:clean run-001 --branches` 删除运行分支和残留的 worktree。
 
 ## 插件会写哪些文件
 
@@ -382,7 +459,8 @@ git switch main && git merge multiagent-runs/run-001-r1
 | `work/modules/<id>/module_report.md`、`interface_request.md` | 模块智能体写的报告和请求 | 随模块一起提交 |
 | `work/integration/<run>_*.md` | 集成报告和请求 | 提交 |
 | `reports/rework/<run>_decisions.md` | 返工决定 | 提交 |
-| `.multiagent/pipeline/` | 运行状态、worktree 认领记录、补丁、锁、结果 JSON、报告、诊断日志 | 忽略（写入 `.git/info/exclude`） |
+| `.multiagent/pipeline/` | 运行状态、worktree 认领记录、补丁、锁、结果 JSON、报告、诊断日志、PR 草稿 | 忽略（写入 `.git/info/exclude`） |
+| `.multiagent/pipeline/merge/<run>/` | 合并用的 worktree，只在主工作区位于其他分支时使用 | 忽略 |
 | `.claude/worktrees/` | 智能体的 worktree，由 Claude Code 创建和删除 | 忽略 |
 
 ## 提高效果的建议
@@ -392,17 +470,22 @@ git switch main && git merge multiagent-runs/run-001-r1
 - **只为真实的 API 调用声明依赖。** 每条 `depends_on` 都会多出一个批次，减少并行度。
 - **运行前先把契约写严。** 大部分返工来自含糊的公开 API。确认计划前花时间读一读 `docs/module_contracts.md`，
   很值得。
-- **按任务选模型。** 简单的数据模块用便宜的模型，难的模块和审查者用会话模型或 Opus。
-- **设置编译命令。** 类型检查或无界面构建能抓住审查者可能漏掉的集成问题。
+- **按任务选模型。** 先选一个预设，再给简单的数据模块换便宜的模型，给难的模块换更强的模型。
+- **设置编译命令和测试命令。** 类型检查或无界面构建，加上完整测试套件，能抓住审查者可能漏掉的集成问题。
+- **登记生成文件。** 引擎项目要设置 `generated_files`，这样导入缓存和 ID 文件永远不会让模块失败。
 
 ## 常见问题
 
-**启动运行时提示 "uncommitted changes"。** 智能体从最后一次提交开始工作。先提交你的改动，或者在命令询问
-时让它作为规划产物提交。
+**启动运行时提示 "uncommitted changes"。** 主工作区在运行分支上，并且有智能体看不到的未提交文件。把它们
+提交掉，或者在命令询问时让它作为规划产物提交；如果是和这次运行无关的个人改动，切到别的分支即可。
 
-**某个模块的结果是 `violation`。** 智能体在自己的文件夹之外写了文件，通常是通过 shell 写的。什么都没有
-合并。到 `.claude/worktrees/` 下保留的 worktree 里看看它想做什么。`rework` 一般会把这种情况转成接口请求或
-契约修改，而不是扩大它的写入范围。事后用 `git worktree remove <path>` 清理。
+**某个模块的结果是 `violation`。** 智能体收到提醒后，仍然在自己的文件夹之外留下了文件。什么都没有合并。
+到 `.claude/worktrees/` 下保留的 worktree 里看看它想做什么。`rework` 一般会把这种情况转成接口请求或契约
+修改，而不是扩大它的写入范围。如果这些文件是引擎产物（比如 Godot 的 `.uid` 或 `.import` 文件），把它们
+加进 `generated_files` 即可。检查完后用 `/module-pipeline:clean` 删除这个 worktree。
+
+**残留的 worktree 和分支越来越多。** 运行 `/module-pipeline:clean`（合并之后加上 `--branches`），清理
+保留的 worktree、失效的认领记录、合并用的 worktree 和已合并的运行分支。
 
 **hook 拒绝了所有写入。** 智能体必须先执行 `claim` 认领步骤，实现者的提示词里已经要求这样做。如果反复
 出现，检查智能体是否运行在 worktree 里（`isolation: 'worktree'`），而不是在你的主工作区。
@@ -411,7 +494,8 @@ git switch main && git merge multiagent-runs/run-001-r1
 `permissions.allow` 里（见[环境要求](#环境要求)）。
 
 **`merge_failed` 并附带 hook 消息。** 你项目的 git hooks（lint、格式化等）拒绝了提交。补丁已经撤回，原因
-写在结果里，下一轮返工可以修复。
+写在结果里，下一轮返工可以修复。如果只在主工作区位于别的分支时出现，多半是 hook 需要已安装的依赖（比如
+`node_modules`），而合并用的 worktree 里没有：把主工作区切回运行分支再重跑即可。
 
 **工作流中途被打断。** 重新运行同一条命令即可，已合并的模块会被跳过。
 
@@ -419,20 +503,22 @@ git switch main && git merge multiagent-runs/run-001-r1
 
 ```
 .claude-plugin/marketplace.json        插件市场清单
+.github/workflows/test.yml             CI：在 Linux、Windows、macOS 上跑测试，并校验插件
+CHANGELOG.md                           版本更新记录
 plugins/module-pipeline/
   .claude-plugin/plugin.json           插件清单
-  skills/                              五个 /module-pipeline:* 命令
+  skills/                              七个 /module-pipeline:* 命令
   agents/                              实现者、集成者、审查者、ops 智能体
   workflows/                           implement-modules.js、integrate-system.js
-  hooks/hooks.json                     PreToolUse 写入范围守卫
+  hooks/hooks.json                     PreToolUse 写入范围守卫、PostToolUse shell 检查
   scripts/pipeline.mjs                 CLI：validate、commit-planning、prepare、claim、
-                                       integrate-task、diagnostics、status
-  scripts/scope-hook.mjs               hook 本体
+                                       integrate-task、diagnostics、status、clean、finish
+  scripts/scope-hook.mjs               两个 hook 的实现
   scripts/lib/                         manifest、scope、git、state、diagnostics
   test/                                node:test 测试和 workflow 模拟器
 ```
 
-运行测试（不需要安装步骤，js-yaml 已内置在仓库里）：
+运行测试（需要 Node 22 或更新版本；不需要安装步骤，js-yaml 已内置在仓库里）：
 
 ```
 npm test
@@ -440,6 +526,9 @@ npm test
 
 workflow 测试用模拟的运行时全局对象执行两个工作流脚本：ops 智能体真正执行 CLI，替身实现者在真实的 git
 worktree 上操作，所以除了语言模型本身，整条链路都是端到端测试过的。
+
+CI 会在 Linux、Windows 和 macOS 上跑同一套测试，并用 `claude plugin validate` 检查插件市场和插件。每个
+版本改了什么见 [CHANGELOG.md](CHANGELOG.md)。
 
 这个项目最初是一个用来管理 Claude Code 智能体的 Electron 桌面程序，那个程序保留在 git 历史中，截止到提交
 `31a2875`。

@@ -11,17 +11,14 @@ effort: medium
 # Run the module stage
 
 Manifest: `$manifest` (if empty, use `tasks/task_manifest.yaml`). Resolve it
-to an absolute path; call that MANIFEST below.
+to an absolute path; call that MANIFEST below. CLI below means
+`node "${CLAUDE_PLUGIN_ROOT}/scripts/pipeline.mjs"`.
 
 ## 1. Check before launching
 
-Run:
-
-```
-node "${CLAUDE_PLUGIN_ROOT}/scripts/pipeline.mjs" validate "MANIFEST"
-```
-
-If it fails, show the errors and stop.
+Run `CLI validate "MANIFEST"`. If it fails, show the errors and stop. Show
+any `warnings` (for example a module count that does not fit the project
+size) and ask whether to continue anyway.
 
 Then check where the session is: `git rev-parse --show-toplevel` must be the
 `projectRoot` from the validate output. Claude Code creates the agents'
@@ -34,36 +31,45 @@ Then check the checkout. If the current branch is the run branch
 `git status --porcelain`; if anything outside `.multiagent/` and
 `.claude/worktrees/` is uncommitted, list it and ask the user whether to
 commit it as planning output. Only with a yes, run
-`node "${CLAUDE_PLUGIN_ROOT}/scripts/pipeline.mjs" commit-planning "MANIFEST"`.
-Without a yes, stop: agents start from the run branch and would not see it.
-If the main checkout is on another branch, its uncommitted files are the
-user's own work; leave them alone.
+`CLI commit-planning "MANIFEST"`. Without a yes, stop: agents start from the
+run branch and would not see it. If the main checkout is on another branch,
+its uncommitted files are the user's own work; leave them alone.
 
-## 2. Launch the workflow
+## 2. Prepare and launch the workflow
+
+Run `CLI prepare "MANIFEST"` from the project root. If `ok` is false, show
+the errors and stop (status `blocked`).
 
 Tell the user how many modules will run, in how many waves, and how many
 agents that starts with which thinking effort (from `estimate.run` in the
-validate output; every agent runs on `estimate.model`), then start
-the workflow. Mention that they may switch the main checkout to another branch
-and keep working while it runs: agents start from the run branch, and merges
-go through a separate worktree when the main checkout is elsewhere. This
-command invocation is the user's authorization:
+validate output; every agent runs on `estimate.model`), then start the
+workflow. Mention that they may switch the main checkout to another branch
+and keep working while it runs. This command invocation is the user's
+authorization. Pass the `workflowArgs` object from the prepare output as
+`args`, exactly as printed:
 
 ```
 Workflow({
   scriptPath: "${CLAUDE_PLUGIN_ROOT}/workflows/implement-modules.js",
-  args: { pluginRoot: "${CLAUDE_PLUGIN_ROOT}", manifest: "MANIFEST" }
+  args: <workflowArgs from prepare>
 })
 ```
 
 Each module runs in its own isolated worktree and may only write inside its
-own folder. Each finished module is audited, committed on branch
-`multiagent-runs/<run-id>`, and reviewed by a read-only reviewer. A rerun
-skips modules that are already merged.
+own folder. Its reviewer then audits and commits it on branch
+`multiagent-runs/<run-id>` and reviews it read-only. A rerun skips modules
+that are already merged.
 
-## 3. Record and report
+## 3. Diagnostics
 
-When the workflow returns, write its result verbatim as JSON to
+When the workflow returns and at least one module merged in this or an
+earlier invocation, run `CLI diagnostics --run <runId>`. Add its output to
+the result as `diagnostics`. If the workflow status is `passed` and
+diagnostics `failed` is true, change the status to `diagnostics_failed`.
+
+## 4. Record and report
+
+Write the result as JSON to
 `.multiagent/pipeline/runs/<runId>-modules-result.json`, and a readable
 report to `.multiagent/pipeline/runs/<runId>-modules-report.md` with, per
 module: status, commit, tests the implementer ran, interface requests,
@@ -81,7 +87,8 @@ Then tell the user, briefly:
   - `rework_required`: blocking review items (list them).
   - `modules_failed`: modules that did not merge, with the reason. A
     `violation` lists the files written outside scope; its worktree is kept
-    for inspection.
+    for inspection. `error` means an agent did not return; `CLI status --run
+    <runId>` shows whether its module merged anyway.
   - `diagnostics_failed`: the first compile errors, or the failing test
     command and the tail of its output.
   - `blocked`: the prepare errors.

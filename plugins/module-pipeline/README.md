@@ -6,18 +6,19 @@ in the [repository README](../../README.md).
 A Claude Code plugin that runs a spec-driven, multi-agent build:
 
 1. **`/module-pipeline:plan <spec> [run-id]`**: the current session acts as the
-   Main Architect. It splits the spec into modules that each own one folder,
-   writes contracts, scaffolds, per-module prompts and `tasks/task_manifest.yaml`,
-   validates it, shows how many agents the run will start, and (with your yes)
-   commits it on branch `multiagent-runs/<run-id>`.
+   Main Architect. It sizes the project, designs a shared layer and splits the
+   rest of the spec into modules that each own one folder, writes contracts,
+   project conventions, scaffolds, per-module prompts and
+   `tasks/task_manifest.yaml`, validates it, shows how many agents the run will
+   start, and (with your yes) commits it on branch `multiagent-runs/<run-id>`.
 2. **`/module-pipeline:run [manifest]`**: a workflow implements every pending
    module in parallel, one agent per module in an isolated worktree, in
-   dependency waves. Each module is audited against its scope, committed on the
-   run branch, and reviewed by a read-only reviewer; then the build and test
-   commands run on the run branch.
+   dependency waves. Each module's reviewer audits it against its scope,
+   commits it on the run branch and reviews it read-only; then the build and
+   test commands run on the run branch.
 3. **`/module-pipeline:integrate [manifest]`**: an integration agent writes the
-   glue code, diagnostics run, and a system reviewer checks the whole result
-   against the spec.
+   glue code; the system reviewer commits it, runs diagnostics and checks the
+   whole result against the spec.
 4. **`/module-pipeline:rework <run-id>`**: the Main Architect decides every
    failure and blocking review item and writes the next run's manifest.
 5. **`/module-pipeline:status [run-id]`**: where every run stands.
@@ -51,6 +52,13 @@ A Claude Code plugin that runs a spec-driven, multi-agent build:
   may be on any branch. When it is not on the run branch, commits and
   diagnostics use a detached merge worktree under
   `.multiagent/pipeline/merge/<run-id>/`.
+- **One shared layer.** With two or more modules the manifest must name the
+  shared layer: helpers, constants, theme values and test fixtures that more
+  than one module needs. Its module is built first and every other module
+  depends on it, so agents import it instead of each writing their own copy.
+- **Module count fits the project size.** `project.estimated_lines` lets
+  validate warn when a run has too many small modules (each one costs a full
+  agent session and a review) or too few large ones.
 - **Reruns are incremental.** Merged modules are recorded in
   `.multiagent/pipeline/runs/<run-id>.json` and skipped next time.
 
@@ -69,11 +77,25 @@ effort:
   module_reviewer: medium
   integrator: medium
   system_reviewer: high
-  pipeline_ops: medium
 ```
 
 A module's own `effort` overrides `module_implementer` for that module. See
 [manifest-schema.md](skills/plan/manifest-schema.md) for the preset table.
+
+## Lean agents
+
+The Main Architect is your own session. Every other agent has one narrow job
+and starts lean:
+
+- **No CLAUDE.md files.** The implementer, reviewers and integrator are
+  defined with `omitClaudeMd: true`, so your global and project CLAUDE.md and
+  rules are not loaded into each of them. The Main Architect copies the rules
+  that matter for the code into `docs/conventions.md`, which they read.
+- **No relay agents.** Your session runs `prepare` and the module-stage
+  diagnostics itself; each module's reviewer runs its merge; the system
+  reviewer commits the glue and runs the integration diagnostics.
+- **Short prompts.** A workflow prompt only names the task; `claim` and the
+  merge command print the task details to the agent that needs them.
 
 ## Requirements
 
@@ -104,9 +126,10 @@ its own.
 ### Programs it starts
 
 - **`node <plugin>/scripts/pipeline.mjs <command>`**, the pipeline CLI. The
-  skills run it from your session and the workflows run it through the
-  `pipeline-ops` agent. Its only child processes are `git` (below) and the two
-  commands you put in the manifest.
+  skills run it from your session; inside the workflows the implementers and
+  the integrator run `claim`, the module reviewers run `integrate-task`, and
+  the system reviewer runs `integrate-task` and `diagnostics`. Its only child
+  processes are `git` (below) and the two commands you put in the manifest.
 - **`git`** in the project, for these subcommands: `status`, `diff`, `log`,
   `ls-files`, `rev-parse`, `rev-list`, `merge-base`, `config` (reading your
   identity only), `switch -c` (creating the run branch), `add`, `commit`,
@@ -118,8 +141,8 @@ its own.
 - **Your `diagnostics.compile_command` and `diagnostics.test_command`**, exactly
   as written in the manifest, in a checkout of the run branch.
 - **Claude Code agents** started by the workflows, all on the `opus` model:
-  one implementer and one reviewer per module, an integrator, a system
-  reviewer, and a relay agent per CLI step. They use Claude Code's normal
+  one implementer and one reviewer per module, an integrator and a system
+  reviewer. They use Claude Code's normal
   tools under your permission settings; implementers and the integrator also
   run your project's build and tests.
 
@@ -176,5 +199,6 @@ npm test
 ```
 
 The workflow tests run both workflow scripts with emulated runtime globals:
-the ops agent executes the real CLI, and stand-in implementers act on real git
-worktrees, so everything except the language models is exercised end to end.
+stand-in implementers act on real git worktrees and stand-in reviewers run the
+real merge and diagnostics commands, so everything except the language models
+is exercised end to end.

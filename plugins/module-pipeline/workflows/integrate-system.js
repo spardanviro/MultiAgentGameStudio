@@ -1,42 +1,25 @@
 export const meta = {
   name: 'module-pipeline-integrate',
-  description: 'Write glue code for merged modules in an isolated worktree, commit it on the run branch, run diagnostics, and review the whole system against the spec',
-  whenToUse: 'Invoked by /module-pipeline:integrate after every module is merged. Requires args {pluginRoot, manifest}.',
+  description: 'Write glue code for merged modules in an isolated worktree; the system reviewer commits it, runs diagnostics and reviews the whole system against the spec',
+  whenToUse: 'Invoked by /module-pipeline:integrate with the workflowArgs that `pipeline.mjs prepare --stage integration` printed.',
   phases: [
-    { title: 'Prepare', detail: 'confirm every module is merged' },
     { title: 'Integrate', detail: 'integration agent in an isolated worktree' },
-    { title: 'Merge', detail: 'audit scope and commit the glue code' },
-    { title: 'Diagnostics', detail: "run the manifest's compile and test commands on the run branch" },
-    { title: 'Review', detail: 'read-only system review against the spec' },
+    { title: 'Review', detail: 'commit the glue, run diagnostics, review the whole system against the spec' },
   ],
 }
 
-const { pluginRoot, manifest } = args || {}
-if (typeof pluginRoot !== 'string' || typeof manifest !== 'string') {
-  throw new Error('module-pipeline-integrate requires args {pluginRoot, manifest}')
+// args is the workflowArgs object from `pipeline.mjs prepare --stage integration`.
+const { pluginRoot, runId, runBranch, goal, spec, manifest, integration, modules, efforts } = args || {}
+if (typeof pluginRoot !== 'string' || typeof runId !== 'string' || !Array.isArray(modules) || !efforts) {
+  throw new Error('module-pipeline-integrate requires the workflowArgs printed by `pipeline.mjs prepare --stage integration`')
 }
-for (const value of [pluginRoot, manifest]) {
-  if (/["\r\n]/.test(value)) {
-    throw new Error(`Unsafe path argument: ${JSON.stringify(value)}`)
-  }
+if (/["\r\n]/.test(pluginRoot) || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(runId)) {
+  throw new Error(`Unsafe argument: ${JSON.stringify({ pluginRoot, runId })}`)
 }
 const CLI = `node "${pluginRoot}/scripts/pipeline.mjs"`
 const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max']
-
-// Every agent runs on the strongest model; roles differ only in thinking
-// effort. Until prepare returns the manifest's settings, ops runs at the default
-// pipeline_ops effort (medium).
-let model = 'opus'
-let opsEffort = 'medium'
-
-const OPS_SCHEMA = {
-  type: 'object',
-  required: ['exitCode', 'stdout'],
-  properties: {
-    exitCode: { type: 'integer' },
-    stdout: { type: 'string', description: 'The complete stdout of the command, verbatim' },
-  },
-}
+// Every agent runs on the strongest model; roles differ only in thinking effort.
+const model = args.model || 'opus'
 
 const IMPL_SCHEMA = {
   type: 'object',
@@ -48,6 +31,29 @@ const IMPL_SCHEMA = {
     testsPassed: { type: 'boolean' },
     interfaceRequests: { type: 'array', items: { type: 'string' } },
     blockers: { type: 'array', items: { type: 'string' } },
+  },
+}
+
+const MERGE_SCHEMA = {
+  type: 'object',
+  required: ['status'],
+  description: 'Fields copied from the JSON the merge command printed',
+  properties: {
+    status: { type: 'string', description: 'merged, empty, violation, unclaimed or merge_failed' },
+    commit: { type: 'string' },
+    files: { type: 'array', items: { type: 'string' } },
+    violations: { type: 'array', items: { type: 'string' } },
+    error: { type: 'string', description: 'error or reason, if any' },
+  },
+}
+
+const DIAGNOSTICS_SCHEMA = {
+  type: 'object',
+  required: ['failed', 'summary'],
+  description: 'From the JSON the diagnostics command printed',
+  properties: {
+    failed: { type: 'boolean', description: 'The `failed` field' },
+    summary: { type: 'string', description: 'Compile errors/warnings count and the test result, one or two lines' },
   },
 }
 
@@ -72,7 +78,9 @@ const SYSTEM_REVIEW_SCHEMA = {
   type: 'object',
   required: ['verdict', 'summary', 'spec_coverage', 'rework_items'],
   properties: {
-    verdict: { type: 'string', enum: ['pass', 'rework'] },
+    merge: MERGE_SCHEMA,
+    diagnostics: DIAGNOSTICS_SCHEMA,
+    verdict: { type: 'string', enum: ['pass', 'rework', 'not_merged'] },
     summary: { type: 'string' },
     spec_coverage: {
       type: 'array',
@@ -93,141 +101,89 @@ const SYSTEM_REVIEW_SCHEMA = {
 const fence = (text) =>
   `<<<AGENT_OUTPUT\n${String(text == null ? '' : text).replace(/<<<AGENT_OUTPUT|AGENT_OUTPUT>>>/g, '[marker removed]')}\nAGENT_OUTPUT>>>`
 
-const bullets = (items) => (items && items.length ? items.map((item) => `- ${item}`).join('\n') : '- (none)')
-
 function agentOptions(effort) {
   return EFFORTS.includes(effort) ? { model, effort } : { model }
 }
 
-async function ops(command, label, phaseTitle) {
-  const reply = await agent(
-    `Run this command exactly once and report its exit code and complete stdout verbatim:\n\n${command}`,
-    { agentType: 'module-pipeline:pipeline-ops', schema: OPS_SCHEMA, label, phase: phaseTitle, ...agentOptions(opsEffort) },
-  )
-  if (!reply) {
-    throw new Error(`${label}: the ops agent did not return`)
-  }
-  try {
-    return JSON.parse(reply.stdout)
-  } catch (error) {
-    throw new Error(`${label}: output was not JSON (exit ${reply.exitCode}): ${String(reply.stdout).slice(0, 400)}`)
-  }
-}
-
-function testSummary(diagnostics) {
-  const tests = diagnostics && diagnostics.tests
-  if (!tests) return 'not configured'
-  if (tests.skipped) return `skipped (${tests.reason})`
-  if (!tests.failed) return `passed (${tests.command})`
-  return `failed (${tests.command}, exit ${tests.exitCode})\n${fence((tests.tail || []).slice(-20).join('\n'))}`
-}
-
-const moduleLines = (modules) =>
-  modules.map((module) => `- ${module.id} (${module.feature}): owns ${module.ownedFolder || module.ownedScript}; report ${module.report}`).join('\n')
-
-phase('Prepare')
-const plan = await ops(`${CLI} prepare "${manifest}" --stage integration`, 'prepare', 'Prepare')
-if (!plan.ok) {
-  return { stage: 'integration', status: 'blocked', reason: 'prepare_failed', errors: plan.errors || [plan.error] }
-}
-model = plan.model || model
-opsEffort = plan.efforts.pipelineOps
-
-let integration = { status: 'already_merged' }
 let impl = null
-if (plan.integration) {
-  const task = plan.integration
+if (integration) {
+  phase('Integrate')
   impl = await agent(
-    `Write the integration glue for run ${plan.runId}.
-Run goal: ${plan.goal || '(see the spec)'}
+    `Write the integration glue for run ${runId}.
+Run goal: ${goal || '(see the spec)'}
 
-1. Claim your worktree before anything else:
-   ${CLI} claim --run ${plan.runId} --task integration
-2. Read your instructions in ${task.promptFile}, plus docs/architecture.md, docs/module_contracts.md and the module reports below.
-3. Wire the modules together, run the project's build/tests if available, and write your integration report.
+1. Claim your worktree first:
+   ${CLI} claim --run ${runId} --task integration
+   It prints your task as JSON: prompt file, the files you may write, report and interface request paths, acceptance criteria.
+2. Read the prompt file, docs/architecture.md, docs/module_contracts.md, docs/conventions.md if it exists, and the module reports.
+3. Wire the modules together, run the project's build and tests, and write your integration report.
 
-You may write only:
-${bullets(task.allowedFiles)}
-Integration report: ${task.report}
-Interface requests (anything a module is missing): ${task.interfaceRequest}
-
-Merged modules:
-${moduleLines(plan.modules)}
-
-Acceptance criteria:
-${bullets(task.acceptance)}`,
+Merged modules: ${modules.join(', ')}`,
     {
       agentType: 'module-pipeline:integrator',
       isolation: 'worktree',
       schema: IMPL_SCHEMA,
       label: 'integrate',
       phase: 'Integrate',
-      ...agentOptions(task.effort),
+      ...agentOptions(integration.effort),
     },
   )
-  integration = await ops(`${CLI} integrate-task --run ${plan.runId} --task integration`, 'merge:integration', 'Merge')
-  // 'empty' means the existing glue already fits (common in rework runs); the
-  // system review below still checks the whole result.
-  if (integration.status !== 'merged' && integration.status !== 'empty') {
-    return {
-      stage: 'integration',
-      runId: plan.runId,
-      runBranch: plan.runBranch,
-      status: 'integration_failed',
-      integration,
-      integrator: impl,
-      next: 'rework',
-    }
-  }
 }
 
-phase('Diagnostics')
-const diagnostics = await ops(`${CLI} diagnostics --run ${plan.runId}`, 'diagnostics', 'Diagnostics')
-
 phase('Review')
+const steps = [
+  integration
+    ? `Commit the integration glue:
+   ${CLI} integrate-task --run ${runId} --task integration
+   Copy status, commit, files, violations and error (or reason) from its JSON into \`merge\`. Status \`empty\` means the existing glue already fits; carry on. For any status other than \`merged\` or \`empty\`, stop there: verdict \`not_merged\`, no rework items.`
+    : null,
+  `Run the project's compile and test commands on the run branch:
+   ${CLI} diagnostics --run ${runId}
+   Put its \`failed\` field and a one or two line summary into \`diagnostics\`; its log file has the full output.`,
+  `Review the integrated result on branch ${runBranch} against the spec${spec ? ` (${spec})` : ''}. Your working directory may be on another branch; read files with \`git show ${runBranch}:<path>\`. The manifest (${manifest}) lists every module, its folder and its report.`,
+].filter(Boolean)
+
 const review = await agent(
-  `Review the integrated result of run ${plan.runId} against the implementation spec.
+  `Review run ${runId} as a whole.
 
-Spec: ${plan.spec || 'docs/ (find the implementation spec; the manifest names none)'}
-Run branch: ${plan.runBranch} (use git log / git show to see every module and the glue commit). Your working directory may be on a different branch; read files with \`git show ${plan.runBranch}:<path>\`.
-${plan.integration ? `Integration report: ${plan.integration.report}` : ''}
+${steps.map((step, index) => `${index + 1}. ${step}`).join('\n\n')}
 
-Modules:
-${moduleLines(plan.modules)}
-
-Tests: ${testSummary(diagnostics)}
-Compile diagnostics: ${diagnostics.ran && diagnostics.command ? `${diagnostics.errorCount} errors, ${diagnostics.warningCount} warnings${diagnostics.errors && diagnostics.errors.length ? `\n${fence(diagnostics.errors.slice(0, 15).join('\n'))}` : ''}` : 'not configured'}
-
-${impl ? `The integrator's own account (a claim to verify, not evidence):\n${fence(`${impl.summary}\nExecution order: ${impl.executionOrder || '-'}\nTests: ${impl.testsRun}`)}` : ''}
-
+Modules: ${modules.join(', ')}
+${impl ? `\nThe integrator's own account (a claim to verify, not evidence):\n${fence(`${impl.summary}\nExecution order: ${impl.executionOrder || '-'}\nTests: ${impl.testsRun}`)}\n` : ''}
 Number issues SYS-1, SYS-2, and so on.`,
   {
     agentType: 'module-pipeline:system-reviewer',
     schema: SYSTEM_REVIEW_SCHEMA,
     label: 'system-review',
     phase: 'Review',
-    ...agentOptions(plan.efforts.systemReviewer),
+    ...agentOptions(efforts.systemReviewer),
   },
 )
 
-const blockingItems = (review ? review.rework_items : []).filter((item) => item.blocks_release === true || item.severity === 'critical')
+const merge = integration ? (review && review.merge) || null : { status: 'already_merged' }
+const diagnostics = (review && review.diagnostics) || null
+const blockingItems = (review ? review.rework_items || [] : []).filter((item) => item.blocks_release === true || item.severity === 'critical')
+// 'empty' means the existing glue already fits (common in rework runs).
+const integrationFailed = !merge || (merge.status !== 'merged' && merge.status !== 'empty' && merge.status !== 'already_merged')
 const status = !review
   ? 'review_missing'
-  : blockingItems.length
-    ? 'rework_required'
-    : diagnostics.failed
-      ? 'diagnostics_failed'
-      : 'passed'
+  : integrationFailed
+    ? 'integration_failed'
+    : blockingItems.length
+      ? 'rework_required'
+      : !diagnostics || diagnostics.failed
+        ? 'diagnostics_failed'
+        : 'passed'
 
 return {
   stage: 'integration',
-  runId: plan.runId,
-  runBranch: plan.runBranch,
+  runId,
+  runBranch,
   status,
-  integration,
+  integration: merge,
   integrator: impl,
   diagnostics,
-  review,
+  review: review ? { verdict: review.verdict, summary: review.summary, spec_coverage: review.spec_coverage, rework_items: review.rework_items } : null,
   blockingItems,
   next: status === 'passed' ? 'merge_run_branch' : 'rework',
 }

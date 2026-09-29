@@ -42,6 +42,8 @@ effort:
   module_implementer: medium
 diagnostics:
   compile_command: null
+shared_layer:
+  existing: [src/common/]
 tasks:
   - id: player
     feature: Player
@@ -77,6 +79,7 @@ export function makeProject(manifestText = DEFAULT_MANIFEST) {
     write(root, `work/prompts/${name}.md`, `Build ${name}.\n`);
   }
   write(root, 'src/player/player.gd', 'class_name Player\n');
+  write(root, 'src/common/util.gd', 'class_name Util\n');
   write(root, 'tasks/task_manifest.yaml', manifestText);
   git(root, 'add', '.');
   git(root, 'commit', '-q', '-m', 'init');

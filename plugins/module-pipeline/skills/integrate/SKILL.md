@@ -11,7 +11,8 @@ effort: medium
 # Run the integration stage
 
 Manifest: `$manifest` (if empty, use `tasks/task_manifest.yaml`). Resolve it
-to an absolute path; call that MANIFEST below.
+to an absolute path; call that MANIFEST below. CLI below means
+`node "${CLAUDE_PLUGIN_ROOT}/scripts/pipeline.mjs"`.
 
 ## 1. Check before launching
 
@@ -29,28 +30,36 @@ If the current branch is the run branch, make sure nothing outside
 `.multiagent/` and `.claude/worktrees/` is uncommitted
 (`git status --porcelain`); if something is, handle it as
 /module-pipeline:run does: ask, and commit only with a yes via
-`node "${CLAUDE_PLUGIN_ROOT}/scripts/pipeline.mjs" commit-planning "MANIFEST"`.
-On any other branch, uncommitted files are the user's own work.
+`CLI commit-planning "MANIFEST"`. On any other branch, uncommitted files are
+the user's own work.
 
-## 2. Launch the workflow
+## 2. Prepare and launch the workflow
 
-This command invocation is the user's authorization:
+Run `CLI prepare "MANIFEST" --stage integration` from the project root. If
+`ok` is false, show the errors and stop (status `blocked`).
+
+This command invocation is the user's authorization. Pass the
+`workflowArgs` object from the prepare output as `args`, exactly as printed:
 
 ```
 Workflow({
   scriptPath: "${CLAUDE_PLUGIN_ROOT}/workflows/integrate-system.js",
-  args: { pluginRoot: "${CLAUDE_PLUGIN_ROOT}", manifest: "MANIFEST" }
+  args: <workflowArgs from prepare>
 })
 ```
 
+The integrator writes the glue in an isolated worktree. The system reviewer
+then commits it on the run branch, runs diagnostics, and reviews the whole
+result against the spec.
+
 ## 3. Record and report
 
-Write the result verbatim as JSON to
+Write the result as JSON to
 `.multiagent/pipeline/runs/<runId>-integration-result.json`, and a readable
 report to `.multiagent/pipeline/runs/<runId>-integration-report.md`: the
-integration outcome, diagnostics (compile errors and the test result), the
-spec coverage table, and the system reviewer's `rework_items` as a YAML
-block.
+integration outcome, diagnostics (the full result is in the run state, see
+`CLI status --run <runId>`, and in the log file it names), the spec coverage
+table, and the system reviewer's `rework_items` as a YAML block.
 
 Tell the user the status:
 

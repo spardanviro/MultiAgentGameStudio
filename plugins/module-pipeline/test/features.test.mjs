@@ -7,8 +7,8 @@ import { handle, watch } from '../scripts/scope-hook.mjs';
 import { validateManifest } from '../scripts/lib/manifest.mjs';
 import { canonicalPath, samePath } from '../scripts/lib/paths.mjs';
 import yaml from '../scripts/vendor/js-yaml.mjs';
-import { DEFAULT_MANIFEST, HOOK, PLUGIN_ROOT, cli, git, makeAgentWorktree, makeProject, write } from './helpers.mjs';
-import { runWorkflow } from './workflow-harness.mjs';
+import { DEFAULT_MANIFEST, HOOK, cli, git, makeAgentWorktree, makeProject, write } from './helpers.mjs';
+import { prepareArgs, runWorkflow } from './workflow-harness.mjs';
 
 const IMPLEMENTER = 'module-pipeline:module-implementer';
 const RUN_BRANCH = 'multiagent-runs/run-001';
@@ -44,7 +44,8 @@ test('manifest: every role gets an effort from the preset unless set, and models
   const plain = parse(DEFAULT_MANIFEST.replace('effort:\n  module_implementer: medium\n', ''));
   assert.equal(plain.model, 'opus');
   assert.equal(plain.preset, 'balanced');
-  assert.deepEqual(plain.efforts, { moduleImplementer: 'medium', moduleReviewer: 'medium', integrator: 'medium', systemReviewer: 'high', pipelineOps: 'medium' });
+  assert.deepEqual(plain.efforts, { moduleImplementer: 'medium', moduleReviewer: 'medium', integrator: 'medium', systemReviewer: 'high' });
+  assert.deepEqual(plain.warnings, []);
 
   const quality = parse(withEffort('  preset: quality\n  module_reviewer: low'));
   assert.equal(quality.efforts.moduleReviewer, 'low', 'an explicit role wins over its preset');
@@ -58,6 +59,9 @@ test('manifest: every role gets an effort from the preset unless set, and models
   assert.throws(() => parse(withEffort('  preset: cheap')), /effort\.preset must be one of economy, balanced, quality/);
   assert.throws(() => parse(withEffort('  module_reviewer: extreme')), /effort\.module_reviewer must be one of low, medium, high, xhigh, max/);
   assert.throws(() => parse(withEffort('  reviewer: high')), /effort\.reviewer is not a role/);
+  assert.deepEqual(parse(withEffort('  pipeline_ops: low')).warnings, [
+    'effort.pipeline_ops is ignored: the pipeline CLI now runs without a relay agent.',
+  ]);
   assert.throws(() => parse(DEFAULT_MANIFEST.replace('    acceptance: [Player moves]', '    acceptance: [Player moves]\n    model: haiku')), /player\.model is no longer supported/);
   assert.throws(() => parse(DEFAULT_MANIFEST.replace('effort:\n  module_implementer: medium', 'defaults:\n  model: sonnet')), /defaults\.model is no longer supported/);
 
@@ -75,10 +79,9 @@ test('validate counts the agents a run and its integration will start, by role a
   assert.deepEqual(json.estimate.run, [
     { role: 'module-implementer', count: 3, effort: 'low' },
     { role: 'module-reviewer', count: 3, effort: 'low' },
-    { role: 'pipeline-ops', count: 5, effort: 'low' },
   ]);
-  assert.deepEqual(json.estimate.integrate.map((row) => row.role), ['integrator', 'system-reviewer', 'pipeline-ops']);
-  assert.equal(json.estimate.totalAgents, 16);
+  assert.deepEqual(json.estimate.integrate.map((row) => row.role), ['integrator', 'system-reviewer']);
+  assert.equal(json.estimate.totalAgents, 8);
 });
 
 test('generated files outside the scope are dropped, inside it they merge, and alone they make an empty task', () => {
@@ -258,7 +261,7 @@ test('finish summarizes the run branch against its base and drafts a PR descript
   };
   await runWorkflow('implement-modules', {
     root,
-    args: { pluginRoot: PLUGIN_ROOT.replace(/\\/g, '/'), manifest },
+    args: prepareArgs(root, manifest),
     scenario: { implement: implementer, review: () => ({ verdict: 'pass', summary: 'ok', rework_items: [] }) },
   });
 
@@ -287,7 +290,7 @@ test('implement workflow runs while the main checkout is on another branch', asy
   let hudSawPlayer = null;
   const { result } = await runWorkflow('implement-modules', {
     root,
-    args: { pluginRoot: PLUGIN_ROOT.replace(/\\/g, '/'), manifest },
+    args: prepareArgs(root, manifest),
     scenario: {
       implement: ({ taskId, write: put, worktree }) => {
         if (taskId === 'hud') {

@@ -2,14 +2,15 @@
 //
 // Schema (YAML):
 //   version: 1
-//   project: { name, root?, spec? }
+//   project: { name, root?, spec?, estimated_lines? }
 //   run: { id, goal? }
-//   effort: { preset?, module_implementer?, module_reviewer?, integrator?, system_reviewer?, pipeline_ops? }
+//   effort: { preset?, module_implementer?, module_reviewer?, integrator?, system_reviewer? }
+//   shared_layer: { task?, existing? }   # required with two or more modules
 //   diagnostics: { compile_command?, test_command?: string | string[], timeout_ms? }
 //   generated_files: ["*.uid", ".godot/"]   # tool output dropped (not rejected) when outside a task's scope
 //   tasks:            # module tasks, one owned folder each
 //     - id, feature, owner?, owned_folder (or legacy owned_script),
-//       test_folder? | test_file?, prompt_file, module_report?,
+//       test_folder? | test_file?, support_folder? (shared-layer task only), prompt_file, module_report?,
 //       interface_request?, allowed_files?, depends_on?, acceptance?, effort?
 //   integration:      # optional glue stage
 //     { id?, prompt_file, allowed_files, integration_report?, interface_request?, acceptance?, effort? }
@@ -36,7 +37,11 @@ const ROLES = {
   module_reviewer: 'moduleReviewer',
   integrator: 'integrator',
   system_reviewer: 'systemReviewer',
-  pipeline_ops: 'pipelineOps',
+};
+
+// Roles that no longer exist; a manifest may still name them, with a warning.
+const RETIRED_ROLES = {
+  pipeline_ops: 'effort.pipeline_ops is ignored: the pipeline CLI now runs without a relay agent.',
 };
 
 export const DEFAULT_PRESET = 'balanced';
@@ -46,10 +51,21 @@ export const DEFAULT_PRESET = 'balanced';
 // one step harder than the per-module roles. (The Main Architect is the user's
 // session running plan/rework; those skills set their own effort.)
 export const PRESETS = {
-  economy: { moduleImplementer: 'low', moduleReviewer: 'low', integrator: 'low', systemReviewer: 'medium', pipelineOps: 'low' },
-  balanced: { moduleImplementer: 'medium', moduleReviewer: 'medium', integrator: 'medium', systemReviewer: 'high', pipelineOps: 'medium' },
-  quality: { moduleImplementer: 'high', moduleReviewer: 'high', integrator: 'high', systemReviewer: 'xhigh', pipelineOps: 'medium' },
+  economy: { moduleImplementer: 'low', moduleReviewer: 'low', integrator: 'low', systemReviewer: 'medium' },
+  balanced: { moduleImplementer: 'medium', moduleReviewer: 'medium', integrator: 'medium', systemReviewer: 'high' },
+  quality: { moduleImplementer: 'high', moduleReviewer: 'high', integrator: 'high', systemReviewer: 'xhigh' },
 };
+
+// How many modules (not counting the shared layer) suit a project of a given
+// size. Each module is a full agent session plus a review, so too many small
+// modules pay that fixed cost over and over, and too few make one agent hold
+// a whole subsystem.
+export const SIZE_BANDS = [
+  { below: 1500, modules: [1, 3] },
+  { below: 5000, modules: [2, 6] },
+  { below: 15000, modules: [4, 12] },
+  { below: Infinity, modules: [8, 20] },
+];
 
 function effortLevel(value, fieldName) {
   const level = String(value).trim();
@@ -78,7 +94,8 @@ function resolveEfforts(raw) {
   if (typeof section !== 'object' || Array.isArray(section)) {
     throw new Error('effort must be a mapping of role to effort level.');
   }
-  const unknown = Object.keys(section).filter((role) => role !== 'preset' && !ROLES[role]);
+  const warnings = Object.keys(section).filter((role) => RETIRED_ROLES[role]).map((role) => RETIRED_ROLES[role]);
+  const unknown = Object.keys(section).filter((role) => role !== 'preset' && !ROLES[role] && !RETIRED_ROLES[role]);
   if (unknown.length) {
     throw new Error(`effort.${unknown[0]} is not a role. Roles: ${Object.keys(ROLES).join(', ')}.`);
   }
@@ -92,7 +109,7 @@ function resolveEfforts(raw) {
       efforts[name] = effortLevel(section[role], `effort.${role}`);
     }
   }
-  return { preset, efforts };
+  return { preset, efforts, warnings };
 }
 
 function commandOrNull(value) {
@@ -148,6 +165,9 @@ function normalizeModuleTask(raw, index, efforts) {
   }
   const testFolder = raw.test_folder ? normalizeScopeEntry(raw.test_folder, `${id}.test_folder`, { folder: true }) : null;
   const testFile = optionalPath(raw.test_file, `${id}.test_file`);
+  const supportFolder = raw.support_folder
+    ? normalizeScopeEntry(raw.support_folder, `${id}.support_folder`, { folder: true })
+    : null;
   const moduleReport = optionalPath(raw.module_report, `${id}.module_report`) || `work/modules/${id}/module_report.md`;
   const interfaceRequest =
     optionalPath(raw.interface_request, `${id}.interface_request`) || `work/modules/${id}/interface_request.md`;
@@ -161,11 +181,12 @@ function normalizeModuleTask(raw, index, efforts) {
     ownedScript,
     testFolder,
     testFile,
+    supportFolder,
     promptFile: normalizeRelPath(raw.prompt_file, `${id}.prompt_file`),
     moduleReport,
     interfaceRequest,
     allowedFiles: uniqueScopes(
-      [ownedFolder, ownedScript, testFolder, testFile, moduleReport, interfaceRequest, ...asStringList(raw.allowed_files)],
+      [ownedFolder, ownedScript, testFolder, testFile, supportFolder, moduleReport, interfaceRequest, ...asStringList(raw.allowed_files)],
       `${id}.allowed_files entry`,
     ),
     dependsOn: asStringList(raw.depends_on),
@@ -211,7 +232,7 @@ function describeOwned(entry) {
 export function validateOwnership(tasks, integration) {
   const owners = tasks.map((task) => ({
     id: task.id,
-    entries: [task.ownedFolder || task.ownedScript, task.testFolder].filter(Boolean),
+    entries: [task.ownedFolder || task.ownedScript, task.testFolder, task.supportFolder].filter(Boolean),
   }));
   for (let i = 0; i < owners.length; i += 1) {
     for (let j = i + 1; j < owners.length; j += 1) {
@@ -240,6 +261,92 @@ export function validateOwnership(tasks, integration) {
       }
     }
   }
+}
+
+/**
+ * The shared layer holds what several modules need: cross-cutting helpers,
+ * constants, theme values and test fixtures. Without one, every module agent
+ * writes its own copy. A run with two or more modules must name it: the module
+ * that builds it in this run (`task`: it runs first and every other module
+ * depends on it), or the folders that already hold it (`existing`, for rework
+ * runs and existing code bases).
+ * @returns {{sharedLayer: object|null, tasks: object[]}} tasks with the shared dependency added
+ */
+function resolveSharedLayer(raw, tasks) {
+  const section = raw.shared_layer;
+  if (section == null) {
+    if (tasks.length >= 2) {
+      throw new Error(
+        'shared_layer is required when a run has two or more modules: name the module that builds the shared helpers and ' +
+          'test fixtures (shared_layer.task) or the folders that already hold them (shared_layer.existing). See manifest-schema.md.',
+      );
+    }
+    tasks.filter((task) => task.supportFolder).forEach(rejectSupportFolder);
+    return { sharedLayer: null, tasks };
+  }
+  if (typeof section !== 'object' || Array.isArray(section)) {
+    throw new Error('shared_layer must be a mapping with task and/or existing.');
+  }
+  const taskId = section.task != null ? safeId(section.task, 'shared_layer.task') : null;
+  const existing = uniqueScopes(asStringList(section.existing), 'shared_layer.existing entry');
+  if (!taskId && !existing.length) {
+    throw new Error('shared_layer needs task (the module that builds it) or existing (folders that already hold it).');
+  }
+  const owner = taskId ? tasks.find((task) => task.id === taskId) : null;
+  if (taskId && !owner) {
+    throw new Error(`shared_layer.task references unknown task: ${taskId}`);
+  }
+  if (owner && owner.dependsOn.length) {
+    throw new Error(`${taskId} builds the shared layer, so it runs first and cannot depend on other modules.`);
+  }
+  tasks.filter((task) => task.supportFolder && task.id !== taskId).forEach(rejectSupportFolder);
+  const paths = owner
+    ? [owner.ownedFolder || owner.ownedScript, owner.supportFolder, ...existing].filter(Boolean)
+    : existing;
+  const withShared = tasks.map((task) =>
+    !owner || task.id === taskId || task.dependsOn.includes(taskId)
+      ? task
+      : { ...task, dependsOn: [taskId, ...task.dependsOn] },
+  );
+  return { sharedLayer: { taskId, paths }, tasks: withShared };
+}
+
+function rejectSupportFolder(task) {
+  throw new Error(`${task.id}.support_folder is only for the module named in shared_layer.task.`);
+}
+
+/**
+ * Checks the module count against the project's estimated size.
+ * @param {number|null} estimatedLines source lines the finished project should have, tests excluded
+ * @param {number} moduleCount modules, not counting the one that builds the shared layer
+ */
+export function sizeModules(estimatedLines, moduleCount) {
+  if (!estimatedLines) {
+    return { sizing: null, warnings: [] };
+  }
+  const [min, max] = SIZE_BANDS.find((band) => estimatedLines < band.below).modules;
+  const sizing = {
+    estimatedLines,
+    modules: moduleCount,
+    recommended: { min, max },
+    linesPerModule: Math.round(estimatedLines / Math.max(moduleCount, 1)),
+  };
+  const warnings = [];
+  if (moduleCount > max) {
+    warnings.push(
+      `${moduleCount} modules for about ${estimatedLines} lines is too fine: each module is a full agent session plus a review. ` +
+        `Merge them into ${min}-${max} modules.`,
+    );
+  } else if (moduleCount < min) {
+    warnings.push(
+      `${moduleCount} modules for about ${estimatedLines} lines is too coarse: one agent would hold a whole subsystem. ` +
+        `Split them into ${min}-${max} modules.`,
+    );
+  }
+  if (estimatedLines < SIZE_BANDS[0].below) {
+    warnings.push('A project this small is usually cheaper to build in one session than through the pipeline.');
+  }
+  return { sizing, warnings };
 }
 
 /**
@@ -286,21 +393,29 @@ export function validateManifest(raw, manifestPath) {
     throw new Error('Manifest version must be 1.');
   }
   const runId = safeId(raw.run?.id, 'run.id');
-  const { preset, efforts } = resolveEfforts(raw);
+  const { preset, efforts, warnings: effortWarnings } = resolveEfforts(raw);
   if (!Array.isArray(raw.tasks) || !raw.tasks.length) {
     throw new Error('Manifest must contain at least one module task under tasks.');
   }
-  const tasks = raw.tasks.map((task, index) => normalizeModuleTask(task, index, efforts));
+  const declared = raw.tasks.map((task, index) => normalizeModuleTask(task, index, efforts));
   const seen = new Set();
-  for (const task of tasks) {
+  for (const task of declared) {
     if (seen.has(task.id)) {
       throw new Error(`Duplicate task id: ${task.id}`);
     }
     seen.add(task.id);
   }
   const integration = normalizeIntegration(raw.integration, runId, efforts);
-  validateOwnership(tasks, integration);
-  planWaves(tasks);
+  validateOwnership(declared, integration);
+  planWaves(declared);
+  const { sharedLayer, tasks } = resolveSharedLayer(raw, declared);
+
+  const estimatedLines = raw.project?.estimated_lines != null ? Number(raw.project.estimated_lines) : null;
+  if (estimatedLines !== null && !(Number.isInteger(estimatedLines) && estimatedLines > 0)) {
+    throw new Error(`project.estimated_lines must be a positive whole number: ${JSON.stringify(raw.project.estimated_lines)}`);
+  }
+  const moduleCount = tasks.filter((task) => task.id !== sharedLayer?.taskId).length;
+  const { sizing, warnings: sizeWarnings } = sizeModules(estimatedLines, moduleCount);
 
   if (raw.generated_files != null && !Array.isArray(raw.generated_files)) {
     throw new Error('generated_files must be a list.');
@@ -309,7 +424,11 @@ export function validateManifest(raw, manifestPath) {
   return {
     manifestPath: canonicalPath(manifestPath),
     projectRoot: resolveProjectRoot(raw.project?.root, manifestPath),
-    project: { name: String(raw.project?.name || 'Project'), spec: raw.project?.spec ? String(raw.project.spec) : null },
+    project: {
+      name: String(raw.project?.name || 'Project'),
+      spec: raw.project?.spec ? String(raw.project.spec) : null,
+      estimatedLines,
+    },
     runId,
     goal: String(raw.run?.goal || ''),
     model: AGENT_MODEL,
@@ -321,6 +440,9 @@ export function validateManifest(raw, manifestPath) {
       timeoutMs: Number(raw.diagnostics?.timeout_ms) || 300000,
     },
     generatedFiles,
+    sharedLayer,
+    sizing,
+    warnings: [...effortWarnings, ...sizeWarnings],
     tasks,
     integration,
   };
@@ -340,13 +462,11 @@ export function estimateRun(manifest, done = new Set()) {
   const run = [
     ...[...byEffort].map(([effort, count]) => ({ role: 'module-implementer', count, effort })),
     { role: 'module-reviewer', count: pending.length, effort: efforts.moduleReviewer },
-    { role: 'pipeline-ops', count: pending.length + 2, effort: efforts.pipelineOps },
   ].filter((row) => row.count > 0);
   const integrate = manifest.integration
     ? [
         { role: 'integrator', count: 1, effort: manifest.integration.effort },
         { role: 'system-reviewer', count: 1, effort: efforts.systemReviewer },
-        { role: 'pipeline-ops', count: 3, effort: efforts.pipelineOps },
       ]
     : [];
   const sum = (rows) => rows.reduce((total, row) => total + row.count, 0);
@@ -366,12 +486,17 @@ export function loadManifest(manifestPath) {
   return validateManifest(raw, absolute);
 }
 
-/** Prompt files that don't exist yet (reported by validate/prepare). */
+/** Prompt files and existing shared-layer folders that are missing (reported by validate/prepare). */
 export function findMissingPromptFiles(manifest) {
-  return [...manifest.tasks, manifest.integration]
+  const prompts = [...manifest.tasks, manifest.integration]
     .filter(Boolean)
     .filter((task) => !fs.existsSync(path.join(manifest.projectRoot, task.promptFile)))
     .map((task) => `${task.id}.prompt_file does not exist: ${task.promptFile}`);
+  const existing = manifest.sharedLayer && !manifest.sharedLayer.taskId ? manifest.sharedLayer.paths : [];
+  const shared = existing
+    .filter((entry) => !fs.existsSync(path.join(manifest.projectRoot, entry)))
+    .map((entry) => `shared_layer.existing does not exist: ${entry}`);
+  return [...prompts, ...shared];
 }
 
 export function findTask(manifest, taskId) {

@@ -67,9 +67,13 @@ codebase that splits cleanly into modules.
 ## What it does
 
 - **Plans from a spec.** Your Claude Code session acts as the *Main Architect*.
-  It reads the spec, designs a module map, writes architecture and contract
-  docs, scaffolds stub files, writes one prompt per module, and produces a
-  validated task manifest.
+  It reads the spec, estimates the project's size, designs a shared layer and a
+  module map sized to it, writes architecture, contract and conventions docs,
+  scaffolds stub files, writes one prompt per module, and produces a validated
+  task manifest.
+- **Builds a shared layer first.** Helpers, constants, theme values and test
+  fixtures that several modules need are built by one module in the first wave,
+  and every other module imports them instead of writing its own copy.
 - **Implements modules in parallel.** A Claude Code dynamic workflow starts one
   agent per module, each in its own isolated git worktree. Modules run in
   dependency *waves*: a module starts only after the modules it depends on are
@@ -79,8 +83,8 @@ codebase that splits cleanly into modules.
   tip. After that, the hook only lets it edit its own folder, its test folder
   and its report files, and it is warned after any shell command that left a
   file outside them.
-- **Audits and commits.** When an agent finishes, its diff is checked against
-  its scope. In-scope work is applied and committed on the run branch, with your
+- **Audits and commits.** When an agent finishes, its reviewer runs the merge:
+  the diff is checked against its scope. In-scope work is applied and committed on the run branch, with your
   git hooks still running. Generated files outside the scope are dropped.
   Anything else outside the scope is refused and the worktree is kept so you
   can inspect it.
@@ -103,12 +107,17 @@ codebase that splits cleanly into modules.
   branch and keep working while a run is in progress.
 - **Runs every agent on the strongest model.** All roles use Opus (always the
   newest one). They differ only in thinking effort, which you set per role:
-  implementers, module reviewers, integrator, system reviewer and ops agents.
+  implementers, module reviewers, integrator and system reviewer.
   Presets (`economy`, `balanced`, `quality`) set all of them at once; the
   default gives the system reviewer `high` and every other agent `medium`,
   and the Main Architect (`plan`, `rework`) always thinks at `high`.
+- **Keeps agents lean.** Only the Main Architect loads your CLAUDE.md files;
+  every other agent starts without them and reads the project rules the
+  architect wrote into `docs/conventions.md`. No agent is spent on relaying
+  pipeline commands.
 - **Shows the cost up front.** Planning ends with a count of the agents each
-  stage will start, by role and thinking effort.
+  stage will start, by role and thinking effort, and a check of the module
+  count against the project's size.
 - **Wraps up.** `finish` summarizes the run branch, drafts a PR description,
   and merges or opens a PR when you say so; `clean` removes leftover worktrees
   and merged run branches.
@@ -124,7 +133,7 @@ flowchart TD
     subgraph wave [each dependency wave, modules in parallel]
         I[module agent<br/>isolated worktree] --> C[claim + scoped writes<br/>hooks enforce and warn]
         C --> A[scope audit<br/>generated files dropped]
-        A -->|in scope| K[commit on run branch]
+        A -->|in scope| K[reviewer commits it<br/>on the run branch]
         A -->|out of scope| V[violation<br/>worktree kept]
         K --> RV[read-only module review]
     end
@@ -144,10 +153,9 @@ Roles:
 | --- | --- | --- |
 | Main Architect | your own session, during `plan` and `rework` | yes, docs, stubs, prompts and manifests |
 | `module-implementer` | one workflow agent per module | only its module's allowed files |
-| `module-reviewer` | one per merged module | no, read-only |
+| `module-reviewer` | one per module | no; it runs the pipeline's merge command, then reviews read-only |
 | `integrator` | one agent in the integration stage | only `integration.allowed_files` |
-| `system-reviewer` | one per integration | no, read-only |
-| `pipeline-ops` | a relay agent that runs the pipeline CLI | no, it only runs one command and reports the output |
+| `system-reviewer` | one per integration | no; it runs the glue merge and diagnostics, then reviews read-only |
 
 Every role runs on the same model, the newest Opus. What differs is the
 thinking effort, set per role in the manifest (see
@@ -201,7 +209,8 @@ you instead.
 
 The architect reads the spec and the project, then writes:
 
-- `docs/architecture.md`, `docs/module_layout.md`, `docs/module_contracts.md`
+- `docs/architecture.md`, `docs/module_layout.md`, `docs/module_contracts.md`,
+  `docs/conventions.md`
 - stub files in every module folder, containing the public API with no logic
 - `work/prompts/<module>.md` for each module, plus `integration.md` if the
   project needs glue code
@@ -212,13 +221,16 @@ example:
 
 | Module | Owns | Depends on | Wave |
 | --- | --- | --- | --- |
-| player | `src/player/` | | 1 |
-| enemy | `src/enemy/` | | 1 |
-| hud | `src/hud/` | player | 2 |
+| shared | `src/shared/`, `tests/support/` | | 1 |
+| player | `src/player/` | shared | 2 |
+| enemy | `src/enemy/` | shared | 2 |
+| hud | `src/hud/` | shared, player | 3 |
 
-It also tells you what the run will cost in agents, for example "all on Opus;
-`run`: 3 implementers (medium), 3 reviewers (medium), 5 ops agents (medium);
-`integrate`: integrator (medium), system reviewer (high), 3 ops agents". You
+It also checks the module count against the estimated size ("about 3,000
+lines: 2-6 modules recommended, 3 planned") and tells you what the run will
+cost in agents, for example "all on Opus; `run`: 4 implementers (medium),
+4 reviewers (medium); `integrate`: integrator (medium), system reviewer
+(high)". You
 can change the thinking effort of any role here, for example "reviewers on
 high, system reviewer on max", switch the preset, or give one hard module
 `xhigh`.
@@ -232,8 +244,8 @@ branch `multiagent-runs/run-001`.
 /module-pipeline:run
 ```
 
-`player` and `enemy` are built in parallel. `hud` starts once `player` is merged,
-from a branch that already contains `player`. Watch progress with `/workflows`.
+`shared` is built first. Then `player` and `enemy` are built in parallel, and
+`hud` starts once `player` is merged, from a branch that already contains it. Watch progress with `/workflows`.
 At the end you get a table of modules with their status and an overall gate
 status. While it runs you can `git switch main` and keep working; the run does
 not need the main checkout.
@@ -277,13 +289,22 @@ At any point, `/module-pipeline:status` shows where every run stands.
 Your session becomes the Main Architect. The run id defaults to `run-001`, or to
 the next free `run-NNN`.
 
-- Splits the spec into modules. Each module is one cohesive feature that one
-  agent can finish in one session, and each owns one folder. Data is kept apart
+- Estimates the project's source lines and picks the module count from that
+  (for example 2-6 modules for 1,500-5,000 lines): every module is a full agent
+  session plus a review, so many tiny modules waste tokens.
+- Designs the shared layer: helpers, constants, theme values and test fixtures
+  that more than one module needs. One module builds it first; the others
+  depend on it.
+- Splits the rest of the spec into modules. Each module is one cohesive feature
+  that one agent can finish in one session, and each owns one folder. Data is kept apart
   from code, and simulation apart from presentation. There is no universal
   "manager" module; composing modules is the integration stage's job.
 - Writes the architecture, layout and contract docs. The contracts (public API,
   signals and events, inputs and outputs, forbidden dependencies) are what
   implementers and reviewers are held to.
+- Writes `docs/conventions.md`: the rules from your CLAUDE.md files that
+  matter for the code. The other agents start without CLAUDE.md files and
+  read this instead.
 - Copies the spec into `docs/spec.md` if it lives outside the repo. Agents only
   see committed files.
 - Scaffolds stubs, writes one self-contained prompt per module (with the
@@ -305,8 +326,9 @@ The default manifest is `tasks/task_manifest.yaml`.
    uncommitted changes, it lists them and asks whether to commit them as
    planning output, because agents cannot see uncommitted files. On any other
    branch, uncommitted files are your own work and are left alone.
-2. Starts the `module-pipeline-implement` workflow. For each wave, and for each
-   module in the wave in parallel:
+2. Runs `prepare` (checks the session, the repository and your git identity)
+   and starts the `module-pipeline-implement` workflow with its output. For
+   each wave, and for each module in the wave in parallel:
    - **Implement:** a `module-implementer` agent in a fresh worktree claims the
      task (which moves the worktree to the run branch tip), writes code and
      tests inside its folder, runs the tests, and writes
@@ -314,13 +336,15 @@ The default manifest is `tasks/task_manifest.yaml`.
      folder, it writes `interface_request.md` instead of editing someone else's
      code. If a shell command leaves a file outside its folder, it is told at
      once and undoes it.
-   - **Merge:** merges run one at a time. The diff is audited against the
-     module's allowed files; generated files outside them are dropped. In-scope
+   - **Merge:** the module's reviewer runs the merge command; a lock keeps
+     merges one at a time. The diff is audited against the module's allowed
+     files; generated files outside them are dropped. In-scope
      work is committed as `module-pipeline(<run>): <module>` on the run branch:
      in the main checkout if it is on the run branch, otherwise in the merge
      worktree `.multiagent/pipeline/merge/<run>`.
-   - **Review:** a `module-reviewer` checks the merged module and returns rework
-     items.
+   - **Review:** the same `module-reviewer` then checks the merged module
+     read-only, including code that duplicates the shared layer, and returns
+     rework items.
 
    Modules that depend on a module that failed to merge are skipped.
 3. Runs diagnostics on the run branch: `compile_command` first, then
@@ -336,12 +360,11 @@ runs after every module is merged.
 - Warns you and asks for confirmation if the module stage did not pass.
 - Starts the `module-pipeline-integrate` workflow. An `integrator` agent works in
   a worktree, limited to `integration.allowed_files` (for example `src/game/`),
-  and can never write inside a module's folder. Its work is audited and
-  committed like a module's.
-- Runs diagnostics (build and test suite).
-- A `system-reviewer` checks the whole run branch against the spec and returns a
-  spec coverage table (done, partial or missing for each requirement) and rework
-  items.
+  and can never write inside a module's folder.
+- A `system-reviewer` commits the glue (audited like a module), runs
+  diagnostics (build and test suite), then checks the whole run branch against
+  the spec and returns a spec coverage table (done, partial or missing for each
+  requirement) and rework items.
 
 ### `/module-pipeline:rework <run-id>`
 
@@ -406,6 +429,7 @@ version: 1
 project:
   name: Card Game
   spec: docs/spec.md
+  estimated_lines: 4000             # expected source lines; validate checks the module count against it
 run:
   id: run-001                       # becomes branch multiagent-runs/run-001
   goal: Playable single-level prototype
@@ -415,7 +439,8 @@ effort:                             # thinking effort per role: low | medium | h
   module_reviewer: medium
   integrator: medium
   system_reviewer: high
-  pipeline_ops: medium
+shared_layer:                       # required with two or more modules
+  task: shared                      # built first; every other module depends on it
 diagnostics:
   compile_command: ["npm", "run", "build"]   # argv list or shell string; null if none
   test_command: ["npm", "test"]              # whole test suite on the run branch; null if none
@@ -425,6 +450,11 @@ generated_files:                    # engine/tool output: dropped, not rejected,
   - "*.import"
   - .godot/
 tasks:
+  - id: shared
+    feature: Shared helpers, constants, theme values and test fixtures
+    owned_folder: src/shared/
+    support_folder: tests/support/   # fixtures other modules' tests import
+    prompt_file: work/prompts/shared.md
   - id: player
     feature: Player movement and health
     owned_folder: src/player/        # required: the one folder this module owns
@@ -451,7 +481,11 @@ integration:
 Rules the validator enforces:
 
 - One folder, one owner. `src/player/` and `src/player/ai/` clash;
-  `src/player/` and `src/players/` do not. Test folders count too.
+  `src/player/` and `src/players/` do not. Test and support folders count too.
+- With two or more modules, `shared_layer` names the module that builds it
+  (`task`, which may not have `depends_on`) or folders that already hold it
+  (`existing`, which must exist; rework runs use this). Only the shared-layer
+  module may have a `support_folder`.
 - No task, including integration, may list a path inside another module's
   folders.
 - `depends_on` must name existing modules and must not form a cycle.
@@ -460,7 +494,17 @@ Rules the validator enforces:
 - `generated_files` entries are a file-name pattern without `/` (only `*` as a
   wildcard, matched anywhere), a folder ending in `/`, or one exact path.
 - Effort levels are `low`, `medium`, `high`, `xhigh` or `max`, and `effort:`
-  accepts only the five role names shown. `model` fields are rejected.
+  accepts only the four role names shown. `model` fields are rejected.
+
+Validate also warns, without failing, when the module count (not counting the
+shared layer) does not fit `project.estimated_lines`:
+
+| Estimated source lines | Modules |
+| --- | --- |
+| under 1,500 | 1-3 (one session is usually cheaper than the pipeline) |
+| 1,500-5,000 | 2-6 |
+| 5,000-15,000 | 4-12 |
+| 15,000 and more | 8-20 |
 
 A module can always write its owned folder, its test folder,
 `work/modules/<id>/module_report.md` and `work/modules/<id>/interface_request.md`.
@@ -472,17 +516,17 @@ Every agent runs on the strongest model: `opus`, which always resolves to the
 newest Opus. There is deliberately no way to put a role on a weaker model.
 Roles differ only in thinking effort:
 
-| Preset | module_implementer | module_reviewer | integrator | system_reviewer | pipeline_ops |
-| --- | --- | --- | --- | --- | --- |
-| `economy` | low | low | low | medium | low |
-| `balanced` (default) | medium | medium | medium | high | medium |
-| `quality` | high | high | high | xhigh | medium |
+| Preset | module_implementer | module_reviewer | integrator | system_reviewer |
+| --- | --- | --- | --- | --- |
+| `economy` | low | low | low | medium |
+| `balanced` (default) | medium | medium | medium | high |
+| `quality` | high | high | high | xhigh |
 
 A role set under `effort:` overrides the preset, and a module's own `effort`
 overrides `module_implementer` for that module (likewise `integration.effort`
-for the integrator). The first command of each workflow (reading the manifest)
-runs at `medium`, the default `pipeline_ops` effort, because the manifest has
-not been read yet.
+for the integrator). The pipeline's own commands need no agent of their own.
+Manifests from before 0.5.0 may still set `pipeline_ops`; it is ignored with a
+warning.
 
 The Main Architect is your own session while it runs `plan` and `rework`:
 those two commands switch it to Opus at `high` effort. The orchestration
@@ -573,6 +617,7 @@ requests), see
 | Path | What | In git? |
 | --- | --- | --- |
 | `docs/architecture.md`, `docs/module_layout.md`, `docs/module_contracts.md` | Architect's design | committed |
+| `docs/conventions.md` | Project rules for the module agents, taken from your CLAUDE.md files | committed |
 | `docs/spec.md` | Copy of your spec, if it lived outside the repo | committed |
 | `tasks/task_manifest*.yaml`, `work/prompts/**` | Manifests and per-module prompts | committed |
 | `work/modules/<id>/module_report.md`, `interface_request.md` | Written by module agents | committed with the module |
@@ -586,9 +631,13 @@ requests), see
 
 - **Specs decide quality.** Concrete rules and acceptance criteria give
   reviewers something to check against. Vague specs produce vague modules.
-- **Keep modules small.** A handful of related files that one agent can finish
-  in one sitting works best. Split big features into neighboring folders under
-  one feature folder.
+- **Size modules to the project.** Give `project.estimated_lines` an honest
+  estimate and follow the recommended module count. Many tiny modules pay the
+  per-agent start-up and review cost again and again; a module that holds a
+  whole subsystem overloads one agent.
+- **Put shared things in the shared layer.** Anything two modules need (a
+  tolerance, a color, a test builder) belongs there, or each agent writes its
+  own copy.
 - **Depend only on real API use.** Every `depends_on` edge adds a wave and takes
   away parallelism.
 - **Tighten the contracts before running.** Most rework comes from vague public
@@ -663,7 +712,7 @@ CHANGELOG.md                           release notes
 plugins/module-pipeline/
   .claude-plugin/plugin.json           plugin manifest
   skills/                              the seven /module-pipeline:* commands
-  agents/                              implementer, integrator, reviewers, ops
+  agents/                              implementer, integrator, module and system reviewers
   workflows/                           implement-modules.js, integrate-system.js
   hooks/hooks.json                     PreToolUse scope guard, PostToolUse shell check
   scripts/pipeline.mjs                 CLI: validate, commit-planning, prepare, claim,
@@ -683,9 +732,10 @@ CI runs the same suite on Linux, Windows and macOS, and checks the marketplace
 and the plugin with `claude plugin validate`. See [CHANGELOG.md](CHANGELOG.md)
 for what changed in each version.
 
-The workflow tests run both workflow scripts with emulated runtime globals. The
-ops agent executes the real CLI, and stand-in implementers act on real git
-worktrees, so everything except the language models is exercised end to end.
+The workflow tests run both workflow scripts with emulated runtime globals.
+Stand-in implementers act on real git worktrees and stand-in reviewers run the
+real merge and diagnostics commands, so everything except the language models
+is exercised end to end.
 
 This project started as an Electron desktop manager for Claude Code agents. That
 app is kept in the git history up to commit `31a2875`.

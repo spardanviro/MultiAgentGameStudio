@@ -5,7 +5,8 @@
 //   validate <manifest>                       check a manifest, plan waves, count agents per role and effort
 //   commit-planning <manifest>                commit the architect's output on the run branch
 //   prepare <manifest> [--stage integration]  check the project, return pending waves / the integration task
-//   claim --run <id> --task <id>              (inside an agent worktree) bind the worktree to a task
+//                                             and the args for the stage's workflow
+//   claim --run <id> --task <id>              (inside an agent worktree) bind the worktree to a task, print the task
 //   integrate-task --run <id> --task <id>     audit a task's worktree and commit its changes on the run branch
 //   diagnostics --run <id>                    run the manifest's compile and test commands on the run branch
 //   status [--run <id>]                       summarize runs
@@ -67,6 +68,8 @@ import {
 class UsageError extends Error {}
 
 const RUN_BRANCH_PATTERN = 'multiagent-runs/*';
+// The plugin folder, with forward slashes so it can be quoted in any shell.
+const PLUGIN_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..').replace(/\\/g, '/');
 const REWORK_SUFFIX = /(-r\d+)+$/;
 
 function parseArgs(argv) {
@@ -119,6 +122,7 @@ function taskInfo(task) {
     ownedScript: task.ownedScript || null,
     testFolder: task.testFolder || null,
     testFile: task.testFile || null,
+    supportFolder: task.supportFolder || null,
     promptFile: task.promptFile,
     report: task.moduleReport || task.integrationReport,
     interfaceRequest: task.interfaceRequest,
@@ -199,9 +203,12 @@ function cmdValidate({ positional }) {
   return {
     ok: errors.length === 0,
     errors,
+    warnings: manifest.warnings,
     runId: manifest.runId,
     projectRoot: manifest.projectRoot,
     modules: manifest.tasks.map((task) => ({ id: task.id, owns: task.ownedFolder || task.ownedScript })),
+    sharedLayer: manifest.sharedLayer,
+    sizing: manifest.sizing,
     waves: planWaves(manifest.tasks).map((wave) => wave.map((task) => task.id)),
     integration: Boolean(manifest.integration),
     generatedFiles: manifest.generatedFiles,
@@ -269,6 +276,17 @@ function cmdPrepare({ positional, flags }) {
     spec: manifest.project.spec,
     model: manifest.model,
     efforts: manifest.efforts,
+    warnings: manifest.warnings,
+  };
+  // What the stage's workflow needs, passed to it unchanged as its args. The
+  // agents read everything else from the claim and merge output.
+  const workflowBase = {
+    pluginRoot: PLUGIN_ROOT,
+    runId: manifest.runId,
+    runBranch: state.runBranch,
+    goal: manifest.goal,
+    model: manifest.model,
+    efforts: manifest.efforts,
   };
 
   if (flags.stage === 'integration') {
@@ -279,17 +297,34 @@ function cmdPrepare({ positional, flags }) {
     if (unmerged.length) {
       return { ok: false, errors: [`Modules not merged yet: ${unmerged.join(', ')}. Finish /module-pipeline:run first.`] };
     }
+    const integration = state.tasks.integration?.status === 'merged' ? null : taskInfo(manifest.integration);
     return {
       ...base,
-      integration: state.tasks.integration?.status === 'merged' ? null : taskInfo(manifest.integration),
+      integration,
       modules: manifest.tasks.map(taskInfo),
+      workflowArgs: {
+        ...workflowBase,
+        spec: manifest.project.spec,
+        manifest: manifest.manifestPath.replace(/\\/g, '/'),
+        integration: integration ? { effort: integration.effort } : null,
+        modules: manifest.tasks.map((task) => task.id),
+      },
     };
   }
 
+  const waves = planWaves(manifest.tasks, new Set(merged)).map((wave) => wave.map(taskInfo));
   return {
     ...base,
     skipped: merged,
-    waves: planWaves(manifest.tasks, new Set(merged)).map((wave) => wave.map(taskInfo)),
+    sharedLayer: manifest.sharedLayer,
+    waves,
+    workflowArgs: {
+      ...workflowBase,
+      skipped: merged,
+      waves: waves.map((wave) =>
+        wave.map((task) => ({ id: task.id, dependsOn: task.dependsOn.filter((id) => !merged.includes(id)), effort: task.effort })),
+      ),
+    },
   };
 }
 
@@ -334,7 +369,15 @@ function cmdClaim({ flags }) {
     claimedAt: new Date().toISOString(),
   };
   writeClaim(root, claim);
-  return { ok: true, worktree: claim.worktree, base: claim.base, syncedToRunBranch: synced, allowedFiles: claim.allowedFiles };
+  // The agent's task, so the workflow prompt only has to name it.
+  return {
+    ok: true,
+    worktree: claim.worktree,
+    base: claim.base,
+    syncedToRunBranch: synced,
+    task: taskInfo(task),
+    sharedLayer: manifest.sharedLayer?.taskId === taskId ? null : manifest.sharedLayer?.paths || null,
+  };
 }
 
 function recordTask(root, runId, taskId, entry) {
@@ -435,7 +478,14 @@ function cmdIntegrateTask({ flags }) {
       }
     }
     recordTask(root, runId, taskId, outcome);
-    return { ok: outcome.status === 'merged', taskId, ...outcome };
+    // The reviewer runs this merge, then reviews against the task below.
+    return {
+      ok: outcome.status === 'merged',
+      taskId,
+      ...outcome,
+      task: taskInfo(task),
+      sharedLayer: manifest.sharedLayer?.taskId === taskId ? null : manifest.sharedLayer?.paths || null,
+    };
   });
 }
 
@@ -688,8 +738,8 @@ export function main(argv) {
 const invokedDirectly = process.argv[1] && samePath(process.argv[1], fileURLToPath(import.meta.url));
 if (invokedDirectly) {
   const { code, result } = main(process.argv.slice(2));
-  // Compact by default: the pipeline-ops agent relays stdout verbatim, and
-  // every byte it copies costs time. --pretty indents for humans.
+  // Compact by default: agents read it and sometimes copy parts of it, and
+  // every byte costs time. --pretty indents for humans.
   const pretty = process.argv.includes('--pretty');
   process.stdout.write(`${JSON.stringify(result, null, pretty ? 2 : undefined)}\n`);
   process.exitCode = code;

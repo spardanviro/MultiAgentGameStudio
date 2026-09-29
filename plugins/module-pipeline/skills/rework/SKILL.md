@@ -67,9 +67,15 @@ or `multiagent-runs/<id>-r<N>` branch, or 1 if there is none. Rework of
 
 - `tasks/task_manifest.<next-run-id>.yaml`: same schema as the current
   manifest (see `${CLAUDE_PLUGIN_ROOT}/skills/plan/manifest-schema.md`), with
-  `run.id: <next-run-id>`, the same project/defaults/diagnostics, only the
-  modules that need work, and the integration section if integration must run
-  again. Rework tasks keep the original id, owned folder and test folder.
+  `run.id: <next-run-id>`, the same project, effort and diagnostics settings
+  (but no `project.estimated_lines`: module sizing is for a full build), only
+  the modules that need work, and the integration section if integration must
+  run again. Rework tasks keep the original id, owned folder, test folder and
+  support folder. With two or more rework tasks, set `shared_layer.existing`
+  to the shared layer's folders on the run branch; if the shared-layer module
+  itself is reworked, name it in `shared_layer.task` instead, so it runs
+  first. When an item is a duplicated helper or fixture, the fix usually
+  belongs in the shared layer plus the modules that copied it.
 - `work/prompts/<next-run-id>/<task-id>.md` for every task: the original
   intent, plus each rework item quoted in full (problem, expected, actual,
   evidence) that this task must resolve.

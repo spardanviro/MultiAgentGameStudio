@@ -58,14 +58,17 @@ module-pipeline 把这些都变成由工具强制执行的规则，而不是只�
 
 ## 它能做什么
 
-- **从需求文档出发做规划。** 你当前的 Claude Code 会话扮演**主架构师**（Main Architect）：读需求、设计模块
-  划分、写架构和接口契约文档、生成桩文件、给每个模块写一份提示词，并产出一份通过校验的任务清单（manifest）。
+- **从需求文档出发做规划。** 你当前的 Claude Code 会话扮演**主架构师**（Main Architect）：读需求、预估项目
+  规模、按规模设计共享层和模块划分、写架构、接口契约和编码规范文档、生成桩文件、给每个模块写一份提示词，
+  并产出一份通过校验的任务清单（manifest）。
+- **先建共享层。** 多个模块都要用的工具函数、常量、主题色和测试夹具，由一个模块在第一批次先建好，其他模块
+  直接引用，不再各写一份。
 - **并行实现模块。** 一个 Claude Code 动态工作流（dynamic workflow）为每个模块启动一个智能体，各自在独立的
   git worktree 里工作。模块按依赖关系分**批次**（wave）运行：一个模块要等它依赖的模块都合并后才开始。
 - **强制限定写入范围。** 每个智能体写任何东西之前，必须先为自己的任务**认领**（claim）所在的 worktree，
   认领时 worktree 会被移到运行分支的最新提交。之后 hook 只允许它编辑自己的文件夹、测试文件夹和报告文件；
   任何 shell 命令留下了越界文件，它都会立刻收到提醒。
-- **审计并提交。** 智能体完成后，它的改动会按写入范围逐一核对。范围内的改动被应用并提交到运行分支（你项目
+- **审计并提交。** 智能体完成后，由它的审查者执行合并：改动按写入范围逐一核对。范围内的改动被应用并提交到运行分支（你项目
   的 git hooks 照常运行）；范围外的生成文件被丢弃；其他越界改动被拒绝，worktree 保留下来供你检查。
 - **审查每个模块。** 只读审查者检查验收标准、接口契约、测试和明显的缺陷，返回结构化的返工项，每项都带严重
   程度，并标明是否阻塞集成。
@@ -78,10 +81,13 @@ module-pipeline 把这些都变成由工具强制执行的规则，而不是只�
 - **断点续跑。** 已合并的模块会被记录下来，重新运行时只做剩下的部分。
 - **不占用你的工作区。** 运行进行中，你可以把主工作区切到别的分支继续工作。
 - **所有智能体都用最强的模型。** 所有职责统一使用 Opus（始终是最新版），区别只在思考强度，由你按职责
-  分别设置：实现者、模块审查者、集成者、系统审查者和 ops 智能体。预设（`economy`、`balanced`、`quality`）
+  分别设置：实现者、模块审查者、集成者和系统审查者。预设（`economy`、`balanced`、`quality`）
   可以一次设好全部职责；默认预设下系统审查者用 `high`，其他智能体都用 `medium`，主架构师（`plan`、`rework`）
   始终用 `high`。
-- **事先说明成本。** 规划结束时会列出每个阶段要启动多少个智能体，按职责和思考强度分开列。
+- **智能体轻装上阵。** 只有主架构师加载你的 CLAUDE.md 文件；其他智能体启动时不加载，改读架构师写进
+  `docs/conventions.md` 的项目规范。也不再为转发流水线命令单独启动智能体。
+- **事先说明成本。** 规划结束时会列出每个阶段要启动多少个智能体，按职责和思考强度分开列，并按项目规模检查
+  模块数量是否合适。
 - **收尾。** `finish` 汇总运行分支、起草 PR 描述，并在你同意后合并或开 PR；`clean` 清理残留的 worktree
   和已合并的运行分支。
 
@@ -96,7 +102,7 @@ flowchart TD
     subgraph wave [每个依赖批次，模块并行]
         I[模块智能体<br/>独立 worktree] --> C[认领 + 受限写入<br/>hook 拦截并提醒]
         C --> A[范围审计<br/>丢弃生成文件]
-        A -->|范围内| K[提交到运行分支]
+        A -->|范围内| K[审查者提交到运行分支]
         A -->|越界| V[violation<br/>保留 worktree]
         K --> RV[只读模块审查]
     end
@@ -116,10 +122,9 @@ flowchart TD
 | --- | --- | --- |
 | 主架构师 | 你自己的会话，在 `plan` 和 `rework` 时 | 能，写文档、桩文件、提示词和 manifest |
 | `module-implementer` | 每个模块一个工作流智能体 | 只能写本模块允许的文件 |
-| `module-reviewer` | 每个已合并模块一个 | 不能，只读 |
+| `module-reviewer` | 每个模块一个 | 不能；先运行流水线的合并命令，再只读审查 |
 | `integrator` | 集成阶段的一个智能体 | 只能写 `integration.allowed_files` |
-| `system-reviewer` | 每次集成一个 | 不能，只读 |
-| `pipeline-ops` | 运行流水线 CLI 的转述智能体 | 不能，只执行一条命令并原样汇报输出 |
+| `system-reviewer` | 每次集成一个 | 不能；先合并胶水代码并运行诊断，再只读审查 |
 
 所有职责都用同一个模型，也就是最新的 Opus。不同的只是思考强度，在 manifest 里按职责设置（见
 [模型与思考强度](#模型与思考强度)）。
@@ -168,7 +173,7 @@ flowchart TD
 
 架构师阅读需求和项目，然后写出：
 
-- `docs/architecture.md`、`docs/module_layout.md`、`docs/module_contracts.md`
+- `docs/architecture.md`、`docs/module_layout.md`、`docs/module_contracts.md`、`docs/conventions.md`
 - 每个模块文件夹里的桩文件：只有公开 API，没有逻辑
 - 每个模块一份 `work/prompts/<module>.md`；如果项目需要胶水代码，再加一份 `integration.md`
 - `tasks/task_manifest.yaml`
@@ -177,12 +182,13 @@ flowchart TD
 
 | 模块 | 拥有的文件夹 | 依赖 | 批次 |
 | --- | --- | --- | --- |
-| player | `src/player/` | | 1 |
-| enemy | `src/enemy/` | | 1 |
-| hud | `src/hud/` | player | 2 |
+| shared | `src/shared/`、`tests/support/` | | 1 |
+| player | `src/player/` | shared | 2 |
+| enemy | `src/enemy/` | shared | 2 |
+| hud | `src/hud/` | shared、player | 3 |
 
-它还会告诉你这次运行要启动多少个智能体，例如"全部使用 Opus；`run`：3 个实现者（medium）、3 个审查者
-（medium）、5 个 ops 智能体（medium）；`integrate`：集成者（medium）、系统审查者（high）、3 个 ops 智能体"。
+它还会按预估代码行数检查模块数量，并告诉你这次运行要启动多少个智能体，例如"全部使用 Opus；`run`：
+4 个实现者（medium）、4 个审查者（medium）；`integrate`：集成者（medium）、系统审查者（high）"。
 这时你可以调整任意职责的思考强度，比如"审查者用 high，系统审查者用 max"，也可以换预设，或者给某个难的模块
 单独设成 `xhigh`。
 
@@ -194,7 +200,8 @@ flowchart TD
 /module-pipeline:run
 ```
 
-`player` 和 `enemy` 并行开发。`player` 合并后 `hud` 才开始，而且它的起点分支里已经包含了 `player`。
+`shared` 最先构建。之后 `player` 和 `enemy` 并行开发；`player` 合并后 `hud` 才开始，而且它的起点分支里
+已经包含了 `player`。
 用 `/workflows` 查看进度。结束时你会看到每个模块的状态表和一个总体关卡状态。运行期间你可以
 `git switch main` 继续干自己的活，运行过程不需要占用主工作区。
 
@@ -234,9 +241,14 @@ flowchart TD
 
 你的会话成为主架构师。run id 默认是 `run-001`，或下一个未被占用的 `run-NNN`。
 
-- 把需求拆成模块。每个模块是一个内聚的功能，一个智能体一次会话就能完成，并且只拥有一个文件夹。数据和代码
+- 预估项目的源码行数，据此决定模块数量（例如 1,500–5,000 行对应 2–6 个模块）：每个模块都是一次完整的
+  智能体会话加一次审查，拆得太碎会浪费 token。
+- 设计共享层：多个模块都要用的工具函数、常量、主题色和测试夹具。由一个模块最先构建，其他模块都依赖它。
+- 把其余需求拆成模块。每个模块是一个内聚的功能，一个智能体一次会话就能完成，并且只拥有一个文件夹。数据和代码
   分开，模拟逻辑和表现层分开。不设万能的"管理器"模块，组装模块是集成阶段的事。
 - 写架构、布局和契约文档。契约（公开 API、信号和事件、输入输出、禁止的依赖）是实现者和审查者共同遵守的标准。
+- 写 `docs/conventions.md`：从你的 CLAUDE.md 文件里摘出与代码相关的规则。其他智能体启动时不加载 CLAUDE.md，
+  改读这份文档。
 - 如果需求文档在仓库外，把它复制到 `docs/spec.md`，因为智能体只能看到已提交的文件。
 - 生成桩文件，为每个模块写一份独立完整的提示词（相关契约段落直接引用在其中），并写出 manifest。
 - 填好构建和测试命令、引擎会自动生成的文件，以及思考强度预设。
@@ -251,15 +263,17 @@ flowchart TD
 
 1. 校验 manifest。如果主工作区在运行分支上并且有未提交的改动，它会列出来并问你是否作为规划产物提交，
    因为智能体看不到未提交的文件。如果主工作区在别的分支上，未提交的文件是你自己的工作，不会被碰。
-2. 启动 `module-pipeline-implement` 工作流。每个批次里的各个模块并行执行：
+2. 运行 `prepare`（检查会话位置、仓库和 git 身份），用它的输出启动 `module-pipeline-implement` 工作流。
+   每个批次里的各个模块并行执行：
    - **实现：** `module-implementer` 智能体在一个新 worktree 里认领任务（worktree 会被移到运行分支的
      最新提交），在自己的文件夹里写代码和测试，运行测试，并写 `work/modules/<id>/module_report.md`。
      如果需要本文件夹之外的东西，它会写 `interface_request.md` 提出接口请求，而不是去改别人的代码。
      如果某条 shell 命令在文件夹外留下了文件，它会立刻收到提醒并撤销。
-   - **合并：** 合并逐个进行。改动按模块允许的文件范围审计，范围外的生成文件会被丢弃。范围内的改动以
+   - **合并：** 由该模块的审查者执行合并命令，锁保证合并逐个进行。改动按模块允许的文件范围审计，范围外的生成文件会被丢弃。范围内的改动以
      `module-pipeline(<run>): <module>` 为提交信息提交到运行分支：主工作区在运行分支上时直接在主工作区
      提交，否则在合并用的 worktree `.multiagent/pipeline/merge/<run>` 里提交。
-   - **审查：** `module-reviewer` 检查已合并的模块，返回返工项。
+   - **审查：** 同一个 `module-reviewer` 接着只读检查已合并的模块（包括是否重复实现了共享层已有的东西），
+     返回返工项。
 
    如果某个模块依赖的模块没能合并，它会被跳过。
 3. 在运行分支上运行诊断：先跑 `compile_command`，再跑 `test_command`（构建失败时跳过测试）。
@@ -271,11 +285,9 @@ flowchart TD
 
 - 如果模块阶段没有通过，会先提醒你并请你确认是否继续。
 - 启动 `module-pipeline-integrate` 工作流。`integrator` 智能体在 worktree 里工作，只能写
-  `integration.allowed_files`（例如 `src/game/`），永远不能写进任何模块的文件夹。它的改动和模块一样经过
-  审计后提交。
-- 运行诊断（构建和测试套件）。
-- `system-reviewer` 对照需求文档检查整个运行分支，返回一张需求覆盖表（每条需求标为 done、partial 或
-  missing），以及返工项。
+  `integration.allowed_files`（例如 `src/game/`），永远不能写进任何模块的文件夹。
+- `system-reviewer` 先提交胶水代码（和模块一样经过审计），再运行诊断（构建和测试套件），然后对照需求文档
+  检查整个运行分支，返回一张需求覆盖表（每条需求标为 done、partial 或 missing），以及返工项。
 
 ### `/module-pipeline:rework <run-id>`
 
@@ -325,6 +337,7 @@ version: 1
 project:
   name: Card Game
   spec: docs/spec.md
+  estimated_lines: 4000             # 预估源码行数；validate 据此检查模块数量
 run:
   id: run-001                       # 对应分支 multiagent-runs/run-001
   goal: Playable single-level prototype
@@ -334,7 +347,8 @@ effort:                             # 各职责的思考强度：low | medium | 
   module_reviewer: medium
   integrator: medium
   system_reviewer: high
-  pipeline_ops: medium
+shared_layer:                       # 两个及以上模块时必填
+  task: shared                      # 最先构建，其他模块都依赖它
 diagnostics:
   compile_command: ["npm", "run", "build"]   # 参数数组或 shell 字符串；没有就写 null
   test_command: ["npm", "test"]              # 在运行分支上跑完整测试套件；没有就写 null
@@ -344,6 +358,11 @@ generated_files:                    # 引擎/工具的产物：出现在任务�
   - "*.import"
   - .godot/
 tasks:
+  - id: shared
+    feature: Shared helpers, constants, theme values and test fixtures
+    owned_folder: src/shared/
+    support_folder: tests/support/   # 供其他模块测试引用的测试夹具
+    prompt_file: work/prompts/shared.md
   - id: player
     feature: Player movement and health
     owned_folder: src/player/        # 必填：本模块拥有的唯一文件夹
@@ -370,14 +389,25 @@ integration:
 校验器强制执行的规则：
 
 - 一个文件夹只有一个所有者。`src/player/` 和 `src/player/ai/` 冲突；`src/player/` 和 `src/players/`
-  不冲突。测试文件夹同样计算在内。
+  不冲突。测试文件夹和 support 文件夹同样计算在内。
 - 任何任务（包括集成）都不能列出位于其他模块文件夹内的路径。
 - `depends_on` 必须引用存在的模块，并且不能形成循环。
 - 每个 `prompt_file` 都必须存在。
 - 不支持通配符。要授权整个文件夹，写以 `/` 结尾的路径。
 - `generated_files` 的每一项可以是不含 `/` 的文件名模式（只支持 `*` 通配符，在任意目录下匹配）、以 `/`
   结尾的文件夹，或者一个确切的路径。
-- 思考强度只能是 `low`、`medium`、`high`、`xhigh` 或 `max`，`effort:` 下只接受上面列出的五个职责名。
+- 思考强度只能是 `low`、`medium`、`high`、`xhigh` 或 `max`，`effort:` 下只接受上面列出的四个职责名。
+- 两个及以上模块时必须有 `shared_layer`：`task` 指定构建共享层的模块（不能有 `depends_on`），或用
+  `existing` 列出已有的共享层文件夹（必须存在，返工轮次用这种写法）。只有共享层模块可以有 `support_folder`。
+
+模块数量（不含共享层）与 `project.estimated_lines` 不匹配时，validate 会给出警告（不会报错）：
+
+| 预估源码行数 | 建议模块数 |
+| --- | --- |
+| 1,500 以下 | 1–3（单会话通常比流水线更省） |
+| 1,500–5,000 | 2–6 |
+| 5,000–15,000 | 4–12 |
+| 15,000 及以上 | 8–20 |
   写了 `model` 字段的 manifest 会被拒绝。
 
 模块始终可以写自己拥有的文件夹、测试文件夹、`work/modules/<id>/module_report.md` 和
@@ -388,15 +418,15 @@ integration:
 所有智能体都用最强的模型：`opus`，它始终指向最新的 Opus。插件有意不提供把某个职责换成较弱模型的选项，
 各职责之间只在思考强度上有区别：
 
-| 预设 | module_implementer | module_reviewer | integrator | system_reviewer | pipeline_ops |
-| --- | --- | --- | --- | --- | --- |
-| `economy` | low | low | low | medium | low |
-| `balanced`（默认） | medium | medium | medium | high | medium |
-| `quality` | high | high | high | xhigh | medium |
+| 预设 | module_implementer | module_reviewer | integrator | system_reviewer |
+| --- | --- | --- | --- | --- |
+| `economy` | low | low | low | medium |
+| `balanced`（默认） | medium | medium | medium | high |
+| `quality` | high | high | high | xhigh |
 
 在 `effort:` 下单独设置的职责会覆盖预设；模块自己的 `effort` 会覆盖这个模块的 `module_implementer`
-（`integration.effort` 对集成者同理）。每个工作流的第一条命令（读取 manifest）以 `pipeline_ops` 的默认强度
-`medium` 运行，因为那时还没读到 manifest。
+（`integration.effort` 对集成者同理）。流水线自身的命令不再占用单独的智能体；旧 manifest 里的
+`pipeline_ops` 会被忽略并给出警告。
 
 主架构师就是你自己的会话：执行 `plan` 和 `rework` 时，这两个命令会把会话切到 Opus、思考强度 `high`。负责串联
 流程的命令（`run`、`integrate`、`status`、`finish`、`clean`）用 `medium`。
@@ -477,6 +507,7 @@ git switch main && git merge --no-ff multiagent-runs/run-001-r1
 | --- | --- | --- |
 | `docs/architecture.md`、`docs/module_layout.md`、`docs/module_contracts.md` | 架构师的设计 | 提交 |
 | `docs/spec.md` | 需求文档的副本（原文件在仓库外时） | 提交 |
+| `docs/conventions.md` | 给模块智能体看的项目规范，摘自你的 CLAUDE.md | 提交 |
 | `tasks/task_manifest*.yaml`、`work/prompts/**` | manifest 和各模块提示词 | 提交 |
 | `work/modules/<id>/module_report.md`、`interface_request.md` | 模块智能体写的报告和请求 | 随模块一起提交 |
 | `work/integration/<run>_*.md` | 集成报告和请求 | 提交 |
@@ -488,7 +519,10 @@ git switch main && git merge --no-ff multiagent-runs/run-001-r1
 ## 提高效果的建议
 
 - **需求文档决定质量。** 具体的规则和验收标准让审查者有据可查；含糊的需求只会得到含糊的模块。
-- **模块要小。** 一个智能体一次能完成的几个相关文件效果最好。大功能拆成同一个功能文件夹下的几个相邻文件夹。
+- **按项目规模拆模块。** 如实填写 `project.estimated_lines`，按建议的模块数量拆分。模块太碎，每个都要重复
+  付出智能体启动和审查的成本；模块太大，一个智能体要扛下整个子系统。
+- **公共的东西放进共享层。** 两个模块都要用的东西（误差容限、颜色、测试构造函数）都放那里，否则每个智能体
+  会各写一份。
 - **只为真实的 API 调用声明依赖。** 每条 `depends_on` 都会多出一个批次，减少并行度。
 - **运行前先把契约写严。** 大部分返工来自含糊的公开 API。确认计划前花时间读一读 `docs/module_contracts.md`，
   很值得。
@@ -539,7 +573,7 @@ CHANGELOG.md                           版本更新记录
 plugins/module-pipeline/
   .claude-plugin/plugin.json           插件清单
   skills/                              七个 /module-pipeline:* 命令
-  agents/                              实现者、集成者、审查者、ops 智能体
+  agents/                              实现者、集成者、模块审查者、系统审查者
   workflows/                           implement-modules.js、integrate-system.js
   hooks/hooks.json                     PreToolUse 写入范围守卫、PostToolUse shell 检查
   scripts/pipeline.mjs                 CLI：validate、commit-planning、prepare、claim、
@@ -555,8 +589,8 @@ plugins/module-pipeline/
 npm test
 ```
 
-workflow 测试用模拟的运行时全局对象执行两个工作流脚本：ops 智能体真正执行 CLI，替身实现者在真实的 git
-worktree 上操作，所以除了语言模型本身，整条链路都是端到端测试过的。
+workflow 测试用模拟的运行时全局对象执行两个工作流脚本：替身实现者在真实的 git worktree 上操作，替身审查者
+真正执行合并和诊断命令，所以除了语言模型本身，整条链路都是端到端测试过的。
 
 CI 会在 Linux、Windows 和 macOS 上跑同一套测试，并用 `claude plugin validate` 检查插件市场和插件。每个
 版本改了什么见 [CHANGELOG.md](CHANGELOG.md)。

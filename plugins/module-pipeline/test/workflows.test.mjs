@@ -2,8 +2,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
-import { PLUGIN_ROOT, cli, git, makeProject } from './helpers.mjs';
-import { runWorkflow } from './workflow-harness.mjs';
+import { cli, git, makeProject } from './helpers.mjs';
+import { prepareArgs, runWorkflow } from './workflow-harness.mjs';
 
 const PASS = { verdict: 'pass', summary: 'Looks right.', rework_items: [] };
 
@@ -19,70 +19,74 @@ function implementer(overrides = {}) {
   };
 }
 
-function setup() {
-  const { root, manifest } = makeProject();
-  return { root, args: { pluginRoot: PLUGIN_ROOT.replace(/\\/g, '/'), manifest } };
+/** Runs the module stage the way the run skill does: prepare, then the workflow with its args. */
+function runModules(root, manifest, scenario) {
+  return runWorkflow('implement-modules', { root, args: prepareArgs(root, manifest), scenario });
 }
 
-test('implement workflow: waves run in order, each module is committed, reviewed and passes', async () => {
-  const { root, args } = setup();
+function runIntegration(root, manifest, scenario) {
+  return runWorkflow('integrate-system', { root, args: prepareArgs(root, manifest, '--stage', 'integration'), scenario });
+}
+
+test('implement workflow: waves run in order, each reviewer merges its module and reviews it', async () => {
+  const { root, manifest } = makeProject();
   let hudSawPlayer = null;
-  const { result, calls } = await runWorkflow('implement-modules', {
-    root,
-    args,
-    scenario: {
-      implement: implementer({
-        hud: ({ write, worktree }) => {
-          hudSawPlayer = fs.existsSync(path.join(worktree, 'src/player/player_impl.gd'));
-          write('src/hud/hud.gd', 'class_name Hud\n');
-          return { summary: 'hud built', testsRun: 'none', blockers: [] };
-        },
-      }),
-      review: () => PASS,
+  let playerClaim = null;
+  const { result, calls } = await runModules(root, manifest, {
+    implement: implementer({
+      hud: ({ write, worktree }) => {
+        hudSawPlayer = fs.existsSync(path.join(worktree, 'src/player/player_impl.gd'));
+        write('src/hud/hud.gd', 'class_name Hud\n');
+        return { summary: 'hud built', testsRun: 'none', blockers: [] };
+      },
+    }),
+    review: (taskId, prompt, merged) => {
+      if (taskId === 'player') {
+        playerClaim = merged;
+      }
+      return PASS;
     },
   });
 
   assert.equal(result.status, 'passed', JSON.stringify(result, null, 2));
-  assert.equal(result.next, 'integrate');
+  assert.equal(result.next, 'diagnostics');
   assert.deepEqual(result.modules.map((module) => [module.task, module.status]), [
     ['player', 'merged'],
     ['enemy', 'merged'],
     ['hud', 'merged'],
   ]);
   assert.equal(hudSawPlayer, true, 'the second wave starts from the run branch that already holds wave one');
+  assert.equal(playerClaim.task.promptFile, 'work/prompts/player.md', 'the merge output carries the task for the reviewer');
+  assert.deepEqual(playerClaim.sharedLayer, ['src/common/']);
   assert.equal(git(root, 'branch', '--show-current'), 'multiagent-runs/run-001');
-  assert.deepEqual(git(root, 'log', '--format=%s', '-3').split('\n').sort(), [
-    'module-pipeline(run-001): enemy',
-    'module-pipeline(run-001): hud',
-    'module-pipeline(run-001): player',
-  ]);
   assert.equal(git(root, 'log', '-1', '--format=%s'), 'module-pipeline(run-001): hud');
 
+  assert.deepEqual([...new Set(calls.map((call) => call.agentType))].sort(), [
+    'module-pipeline:module-implementer',
+    'module-pipeline:module-reviewer',
+  ], 'no agent is spent on relaying pipeline commands');
   const implementCalls = calls.filter((call) => call.agentType === 'module-pipeline:module-implementer');
   assert.equal(implementCalls.length, 3);
   assert.ok(implementCalls.every((call) => call.isolation === 'worktree'));
   assert.ok(calls.every((call) => call.model === 'opus'), 'every agent runs on the strongest model');
   assert.ok(implementCalls.every((call) => call.effort === 'medium'), 'effort.module_implementer reaches the implementers');
-  const reviewCalls = calls.filter((call) => call.agentType === 'module-pipeline:module-reviewer');
-  assert.equal(reviewCalls.length, 3);
-  assert.ok(reviewCalls.every((call) => call.effort === 'medium'), 'the balanced preset gives reviewers medium');
-  assert.ok(calls.filter((call) => call.agentType === 'module-pipeline:pipeline-ops').every((call) => call.effort === 'medium'));
+  assert.ok(calls.filter((call) => call.agentType === 'module-pipeline:module-reviewer').every((call) => call.effort === 'medium'));
 });
 
 test('implement workflow: an out-of-scope module is not merged and its dependents are skipped', async () => {
-  const { root, args } = setup();
-  const { result } = await runWorkflow('implement-modules', {
-    root,
-    args,
-    scenario: {
-      implement: implementer({
-        player: ({ write }) => {
-          write('src/player/player_impl.gd', 'ok\n');
-          write('src/enemy/sneaky.gd', 'not mine\n');
-          return { summary: 'player built', testsRun: 'none', blockers: [] };
-        },
-      }),
-      review: () => PASS,
+  const { root, manifest } = makeProject();
+  let reviewedPlayer = false;
+  const { result } = await runModules(root, manifest, {
+    implement: implementer({
+      player: ({ write }) => {
+        write('src/player/player_impl.gd', 'ok\n');
+        write('src/enemy/sneaky.gd', 'not mine\n');
+        return { summary: 'player built', testsRun: 'none', blockers: [] };
+      },
+    }),
+    review: (taskId) => {
+      reviewedPlayer ||= taskId === 'player';
+      return PASS;
     },
   });
 
@@ -91,6 +95,8 @@ test('implement workflow: an out-of-scope module is not merged and its dependent
   const byTask = Object.fromEntries(result.modules.map((module) => [module.task, module]));
   assert.equal(byTask.player.status, 'violation');
   assert.deepEqual(byTask.player.violations, ['src/enemy/sneaky.gd']);
+  assert.equal(byTask.player.review, null);
+  assert.equal(reviewedPlayer, false, 'a module that did not merge is not reviewed');
   assert.equal(byTask.enemy.status, 'merged');
   assert.equal(byTask.hud.status, 'skipped');
   assert.match(byTask.hud.reason, /depends on player/);
@@ -98,7 +104,7 @@ test('implement workflow: an out-of-scope module is not merged and its dependent
 });
 
 test('implement workflow: a blocking review item requires rework; a rerun skips merged modules', async () => {
-  const { root, args } = setup();
+  const { root, manifest } = makeProject();
   const blocking = {
     verdict: 'rework',
     summary: 'HUD ignores health changes.',
@@ -125,83 +131,74 @@ test('implement workflow: a blocking review item requires rework; a rerun skips 
       },
     ],
   };
-  const first = await runWorkflow('implement-modules', {
-    root,
-    args,
-    scenario: { implement: implementer(), review: (taskId) => (taskId === 'hud' ? blocking : PASS) },
+  const first = await runModules(root, manifest, {
+    implement: implementer(),
+    review: (taskId) => (taskId === 'hud' ? blocking : PASS),
   });
   assert.equal(first.result.status, 'rework_required');
   assert.deepEqual(first.result.blockingItems.map((item) => [item.task, item.issue_id]), [['hud', 'hud-1']]);
 
-  const second = await runWorkflow('implement-modules', {
-    root,
-    args,
-    scenario: { implement: () => assert.fail('nothing should be re-implemented'), review: () => PASS },
+  const second = await runModules(root, manifest, {
+    implement: () => assert.fail('nothing should be re-implemented'),
+    review: () => PASS,
   });
   assert.deepEqual(second.result.alreadyMerged.sort(), ['enemy', 'hud', 'player']);
   assert.deepEqual(second.result.modules, []);
 });
 
-test('implement workflow: prepare errors stop the run before any agent starts', async () => {
-  const { root, args } = setup();
+test('prepare errors stop the run before the workflow starts; the workflow needs its args', async () => {
+  const { root, manifest } = makeProject();
   fs.writeFileSync(path.join(root, 'notes.txt'), 'uncommitted\n');
-  const { result, calls } = await runWorkflow('implement-modules', {
-    root,
-    args,
-    scenario: { implement: () => assert.fail('no agents'), review: () => assert.fail('no agents') },
-  });
-  assert.equal(result.status, 'blocked');
-  assert.match(result.errors[0], /uncommitted changes \(notes\.txt\)/);
-  assert.equal(calls.length, 1);
+  const prepared = cli(root, 'prepare', manifest).json;
+  assert.equal(prepared.ok, false);
+  assert.match(prepared.errors[0], /uncommitted changes \(notes\.txt\)/);
+  await assert.rejects(
+    runWorkflow('implement-modules', { root, args: { manifest }, scenario: {} }),
+    /requires the workflowArgs printed by `pipeline\.mjs prepare`/,
+  );
 });
 
-test('integrate workflow: glue is committed, diagnostics run, and the system review gates release', async () => {
-  const { root, args } = setup();
-  await runWorkflow('implement-modules', { root, args, scenario: { implement: implementer(), review: () => PASS } });
+test('integrate workflow: the system reviewer commits the glue, runs diagnostics and gates release', async () => {
+  const { root, manifest } = makeProject();
+  await runModules(root, manifest, { implement: implementer(), review: () => PASS });
 
   let reviewPrompt = '';
-  const { result, calls } = await runWorkflow('integrate-system', {
-    root,
-    args,
-    scenario: {
-      integrate: ({ write }) => {
-        write('src/game/main.gd', 'extends Node\n');
-        write('work/integration/run-001_integration_report.md', 'wired\n');
-        return { summary: 'wired player, enemy, hud', executionOrder: 'player, enemy, hud', testsRun: 'none', blockers: [] };
-      },
-      systemReview: (prompt) => {
-        reviewPrompt = prompt;
-        return { verdict: 'pass', summary: 'Meets the spec.', spec_coverage: [{ feature: 'Player', status: 'done' }], rework_items: [] };
-      },
+  const { result, calls } = await runIntegration(root, manifest, {
+    integrate: ({ write }) => {
+      write('src/game/main.gd', 'extends Node\n');
+      write('work/integration/run-001_integration_report.md', 'wired\n');
+      return { summary: 'wired player, enemy, hud', executionOrder: 'player, enemy, hud', testsRun: 'none', blockers: [] };
+    },
+    systemReview: (prompt) => {
+      reviewPrompt = prompt;
+      return { verdict: 'pass', summary: 'Meets the spec.', spec_coverage: [{ feature: 'Player', status: 'done' }], rework_items: [] };
     },
   });
 
   assert.equal(result.status, 'passed', JSON.stringify(result, null, 2));
   assert.equal(result.integration.status, 'merged');
+  assert.equal(result.diagnostics.failed, false);
   assert.ok(calls.every((call) => call.model === 'opus'));
-  const effortOf = (agentType) => calls.find((call) => call.agentType === agentType).effort;
-  assert.equal(effortOf('module-pipeline:integrator'), 'medium');
-  assert.equal(effortOf('module-pipeline:system-reviewer'), 'high');
+  assert.deepEqual(calls.map((call) => [call.agentType, call.effort]), [
+    ['module-pipeline:integrator', 'medium'],
+    ['module-pipeline:system-reviewer', 'high'],
+  ]);
   assert.equal(git(root, 'log', '-1', '--format=%s'), 'module-pipeline(run-001): integration');
-  assert.match(reviewPrompt, /Spec: docs\/spec\.md/);
+  assert.match(reviewPrompt, /against the spec \(docs\/spec\.md\)/);
   assert.match(reviewPrompt, /<<<AGENT_OUTPUT\nwired player, enemy, hud/);
   assert.equal(cli(root, 'status', '--run', 'run-001').json.runs[0].tasks.integration, 'merged');
 });
 
 test('integrate workflow: an integrator with nothing to change still gets diagnostics and the system review', async () => {
-  const { root, args } = setup();
-  await runWorkflow('implement-modules', { root, args, scenario: { implement: implementer(), review: () => PASS } });
+  const { root, manifest } = makeProject();
+  await runModules(root, manifest, { implement: implementer(), review: () => PASS });
 
   let reviewed = false;
-  const { result } = await runWorkflow('integrate-system', {
-    root,
-    args,
-    scenario: {
-      integrate: () => ({ summary: 'the existing glue already fits', testsRun: 'none', blockers: [] }),
-      systemReview: () => {
-        reviewed = true;
-        return { verdict: 'pass', summary: 'ok', spec_coverage: [], rework_items: [] };
-      },
+  const { result } = await runIntegration(root, manifest, {
+    integrate: () => ({ summary: 'the existing glue already fits', testsRun: 'none', blockers: [] }),
+    systemReview: () => {
+      reviewed = true;
+      return { verdict: 'pass', summary: 'ok', spec_coverage: [], rework_items: [] };
     },
   });
 
@@ -210,14 +207,25 @@ test('integrate workflow: an integrator with nothing to change still gets diagno
   assert.equal(result.status, 'passed', JSON.stringify(result, null, 2));
 });
 
-test('integrate workflow refuses to start before every module is merged', async () => {
-  const { root, args } = setup();
-  cli(root, 'prepare', args.manifest);
-  const { result } = await runWorkflow('integrate-system', {
-    root,
-    args,
-    scenario: { integrate: () => assert.fail('no agent'), systemReview: () => assert.fail('no agent') },
+test('integrate workflow: glue written outside its scope fails the integration without a review', async () => {
+  const { root, manifest } = makeProject();
+  await runModules(root, manifest, { implement: implementer(), review: () => PASS });
+
+  const { result } = await runIntegration(root, manifest, {
+    integrate: ({ write }) => {
+      write('src/player/patched.gd', 'not the glue\n');
+      return { summary: 'patched the player', testsRun: 'none', blockers: [] };
+    },
+    systemReview: () => assert.fail('no review without the glue'),
   });
-  assert.equal(result.status, 'blocked');
-  assert.match(result.errors[0], /Modules not merged yet/);
+  assert.equal(result.status, 'integration_failed');
+  assert.equal(result.integration.status, 'violation');
+});
+
+test('integration cannot be prepared before every module is merged', () => {
+  const { root, manifest } = makeProject();
+  cli(root, 'prepare', manifest);
+  const prepared = cli(root, 'prepare', manifest, '--stage', 'integration').json;
+  assert.equal(prepared.ok, false);
+  assert.match(prepared.errors[0], /Modules not merged yet/);
 });

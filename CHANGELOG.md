@@ -3,6 +3,35 @@
 All notable changes to the module-pipeline plugin. Versions follow
 `plugins/module-pipeline/.claude-plugin/plugin.json`.
 
+## 0.5.0 - 2026-09-29
+
+Cheaper agents and better-organized code, from the token analysis of the first
+real run.
+
+### Changed
+
+- The implementer, reviewers and integrator are defined with
+  `omitClaudeMd: true`: your CLAUDE.md files and rules are no longer loaded into
+  every agent (they were about two thirds of each agent's ~33k-token start-up).
+  The Main Architect writes the rules that matter for the code into
+  `docs/conventions.md`, which the agents read.
+- The `pipeline-ops` relay agent is gone. The session runs `prepare` and the
+  module-stage diagnostics; each module reviewer runs its module's merge; the
+  system reviewer commits the glue and runs the integration diagnostics. The
+  workflows take the `workflowArgs` printed by `prepare`. `effort.pipeline_ops`
+  is ignored with a warning.
+- Workflow prompts only name the task; `claim` and `integrate-task` print the
+  task details (and the shared-layer folders) to the agent.
+
+### Added
+
+- `shared_layer` (required with two or more modules): the module that builds
+  shared helpers, constants, theme values and test fixtures (`task`, runs first,
+  every other module depends on it, may own a `support_folder`), or folders that
+  already hold them (`existing`). Reviewers flag code that duplicates it.
+- `project.estimated_lines`: validate reports `sizing` and warns when the module
+  count does not fit the project's size. The plan skill sizes modules from it.
+
 ## 0.4.2 - 2026-09-29
 
 Directory submission feedback.

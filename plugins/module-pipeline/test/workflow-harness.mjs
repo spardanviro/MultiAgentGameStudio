@@ -1,10 +1,11 @@
 // Runs a workflow script outside Claude Code: the runtime globals are
-// emulated, the pipeline-ops agent really executes its command, and the
-// LLM agents are replaced by scenario callbacks that act on real worktrees.
+// emulated, and the LLM agents are replaced by stand-ins. Writers act on real
+// worktrees; reviewers really run the pipeline commands their prompt names
+// (merge, diagnostics) and let the scenario supply the verdict.
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
-import { PLUGIN_ROOT, git, makeAgentWorktree } from './helpers.mjs';
+import { PLUGIN_ROOT, cli, git, makeAgentWorktree } from './helpers.mjs';
 
 const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor;
 
@@ -37,9 +38,14 @@ async function parallel(thunks) {
   return Promise.all(thunks.map((thunk) => thunk().catch(() => null)));
 }
 
-function runOpsCommand(command, cwd) {
-  const result = spawnSync(command, { cwd, shell: true, encoding: 'utf8' });
-  return { exitCode: result.status ?? -1, stdout: result.stdout || result.stderr || '' };
+/** Runs the first `node "…pipeline.mjs" <command> …` line of a prompt, the way an agent would. */
+function runPromptCommand(prompt, command, cwd) {
+  const match = prompt.match(new RegExp(`(node "[^"]+" ${command} [^\\n]+)`));
+  if (!match) {
+    return null;
+  }
+  const result = spawnSync(match[1], { cwd, shell: true, encoding: 'utf8' });
+  return JSON.parse(result.stdout);
 }
 
 /**
@@ -48,25 +54,43 @@ function runOpsCommand(command, cwd) {
  * prompt inside it, then lets the scenario write files.
  */
 function actInWorktree(root, prompt, act) {
-  const claim = prompt.match(/(node "[^"]+" claim --run \S+ --task \S+)/);
-  const taskId = prompt.match(/--task (\S+)/)[1];
+  const taskId = prompt.match(/claim --run \S+ --task (\S+)/)[1];
   const worktree = makeAgentWorktree(root, taskId);
-  const claimed = runOpsCommand(claim[1], worktree);
-  if (claimed.exitCode !== 0) {
-    throw new Error(`claim failed: ${claimed.stdout}`);
+  const claimed = runPromptCommand(prompt, 'claim', worktree);
+  if (!claimed.ok) {
+    throw new Error(`claim failed: ${JSON.stringify(claimed)}`);
   }
-  return act({ worktree, taskId, write: (rel, text) => {
+  return act({ worktree, taskId, claimed, write: (rel, text) => {
     const file = path.join(worktree, rel);
     fs.mkdirSync(path.dirname(file), { recursive: true });
     fs.writeFileSync(file, text, 'utf8');
   } });
 }
 
+const mergeFields = (json) => ({
+  status: json.status,
+  commit: json.commit,
+  files: json.files,
+  violations: json.violations,
+  dropped: json.dropped,
+  error: json.error || json.reason,
+  worktree: json.worktree,
+});
+
+/** The args the session passes: the workflowArgs printed by prepare. */
+export function prepareArgs(root, manifest, ...extra) {
+  const { json } = cli(root, 'prepare', manifest, ...extra);
+  if (!json.ok) {
+    throw new Error(`prepare failed: ${JSON.stringify(json.errors)}`);
+  }
+  return json.workflowArgs;
+}
+
 /**
  * @param {string} name workflow file name without .js
  * @param {{root: string, args: object, scenario: object}} options
  *   scenario.implement(ctx) / scenario.integrate(ctx): write files, return the agent's result
- *   scenario.review(taskId, prompt) / scenario.systemReview(prompt): return the reviewer's result
+ *   scenario.review(taskId, prompt, merge) / scenario.systemReview(prompt, diagnostics): return the verdict
  */
 export async function runWorkflow(name, { root, args, scenario }) {
   const calls = [];
@@ -74,16 +98,30 @@ export async function runWorkflow(name, { root, args, scenario }) {
   async function agent(prompt, options = {}) {
     calls.push({ label: options.label, agentType: options.agentType, isolation: options.isolation, model: options.model, effort: options.effort });
     switch (options.agentType) {
-      case 'module-pipeline:pipeline-ops':
-        return runOpsCommand(prompt.split('\n\n').slice(1).join('\n\n').trim(), root);
       case 'module-pipeline:module-implementer':
         return actInWorktree(root, prompt, (ctx) => scenario.implement({ ...ctx, prompt, root }));
       case 'module-pipeline:integrator':
         return actInWorktree(root, prompt, (ctx) => scenario.integrate({ ...ctx, prompt, root }));
-      case 'module-pipeline:module-reviewer':
-        return scenario.review(prompt.match(/Review module "([^"]+)"/)[1], prompt);
-      case 'module-pipeline:system-reviewer':
-        return scenario.systemReview(prompt);
+      case 'module-pipeline:module-reviewer': {
+        const merged = runPromptCommand(prompt, 'integrate-task', root);
+        if (!merged.ok) {
+          return { merge: mergeFields(merged), verdict: 'not_merged', summary: 'not merged', rework_items: [] };
+        }
+        const taskId = prompt.match(/Review module "([^"]+)"/)[1];
+        return { merge: mergeFields(merged), ...scenario.review(taskId, prompt, merged) };
+      }
+      case 'module-pipeline:system-reviewer': {
+        const merged = runPromptCommand(prompt, 'integrate-task', root);
+        if (merged && merged.status !== 'merged' && merged.status !== 'empty') {
+          return { merge: mergeFields(merged), verdict: 'not_merged', summary: 'not merged', spec_coverage: [], rework_items: [] };
+        }
+        const diagnostics = runPromptCommand(prompt, 'diagnostics', root);
+        return {
+          ...(merged ? { merge: mergeFields(merged) } : {}),
+          diagnostics: { failed: Boolean(diagnostics.failed), summary: diagnostics.ran ? 'ran' : 'nothing configured' },
+          ...scenario.systemReview(prompt, diagnostics),
+        };
+      }
       default:
         throw new Error(`Unexpected agent type ${options.agentType}`);
     }

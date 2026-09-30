@@ -262,6 +262,31 @@ export function changedBetween(root, base, tip) {
   return git(root, ['diff', '--name-only', '-z', base, tip]).split('\0').map((file) => file.trim()).filter(Boolean).sort();
 }
 
+// Added plus deleted lines in `git diff --numstat` output; binary files count as one line.
+function sumNumstat(output) {
+  return output
+    .split(/\r?\n/)
+    .filter(Boolean)
+    .reduce((total, line) => {
+      const [added, deleted] = line.split('\t');
+      return total + (added === '-' ? 1 : Number(added) + Number(deleted));
+    }, 0);
+}
+
+/** Lines changed in a worktree relative to its base, limited to files (untracked files included). */
+export function changedLineCount(worktree, base, files) {
+  if (!files.length) {
+    return 0;
+  }
+  git(worktree, ['add', '-N', '--', ...files]);
+  return sumNumstat(git(worktree, ['diff', '--numstat', base, '--', ...files]));
+}
+
+/** Lines changed between two commits, limited to files. */
+export function changedLineCountBetween(root, base, tip, files) {
+  return files.length ? sumNumstat(git(root, ['diff', '--numstat', base, tip, '--', ...files])) : 0;
+}
+
 /** Binary patch of committed changes between two commits, limited to files. */
 export function createPatchBetween(root, base, tip, files, patchPath) {
   const diff = git(root, ['diff', '--binary', base, tip, '--', ...files]);

@@ -14,6 +14,8 @@
 //       interface_request?, allowed_files?, depends_on?, acceptance?, effort?
 //   integration:      # optional glue stage
 //     { id?, prompt_file, allowed_files, integration_report?, interface_request?, acceptance?, effort? }
+//   patch:            # instead of tasks + integration: a small rework done by one agent
+//     { prompt_file, allowed_files, acceptance?, max_changed_lines?, patch_report?, interface_request?, effort? }
 //
 // Every agent runs on the strongest model; roles differ only in thinking effort.
 import fs from 'node:fs';
@@ -24,6 +26,11 @@ import { entriesOverlap, normalizeGeneratedPattern, normalizeRelPath, normalizeS
 
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 const INTEGRATION_ID = 'integration';
+const PATCH_ID = 'patch';
+
+// A patch run is meant for small fixes. The merge refuses a patch whose
+// in-scope diff (added plus deleted lines) is larger than this.
+export const DEFAULT_PATCH_LINES = 300;
 
 // The model every pipeline agent runs on. The alias always resolves to the
 // newest Opus, so the pipeline follows model upgrades without edits.
@@ -155,8 +162,8 @@ function normalizeModuleTask(raw, index, efforts) {
   }
   const id = safeId(raw.id, `tasks[${index}].id`);
   rejectModelFields(raw, id);
-  if (id === INTEGRATION_ID) {
-    throw new Error(`Module task id "${INTEGRATION_ID}" is reserved for the integration stage.`);
+  if (id === INTEGRATION_ID || id === PATCH_ID) {
+    throw new Error(`Module task id "${id}" is reserved for the ${id} stage.`);
   }
   const ownedFolder = raw.owned_folder ? normalizeScopeEntry(raw.owned_folder, `${id}.owned_folder`, { folder: true }) : null;
   const ownedScript = !ownedFolder && raw.owned_script ? normalizeRelPath(raw.owned_script, `${id}.owned_script`) : null;
@@ -219,6 +226,41 @@ function normalizeIntegration(raw, runId, efforts) {
     allowedFiles: uniqueScopes([report, interfaceRequest, ...extra], 'integration.allowed_files entry'),
     acceptance: asStringList(raw.acceptance),
     effort: raw.effort != null ? effortLevel(raw.effort, 'integration.effort') : efforts.integrator,
+  };
+}
+
+/**
+ * A patch run: one agent applies a list of small rework items across the
+ * folders they touch, instead of one agent per module plus integration.
+ */
+function normalizePatch(raw, runId, efforts) {
+  if (typeof raw !== 'object' || Array.isArray(raw)) {
+    throw new Error('patch must be a mapping.');
+  }
+  rejectModelFields(raw, PATCH_ID);
+  const report = optionalPath(raw.patch_report, 'patch.patch_report') || `work/patches/${runId}_patch_report.md`;
+  const interfaceRequest = optionalPath(raw.interface_request, 'patch.interface_request') ||
+    `work/patches/${runId}_interface_request.md`;
+  const extra = asStringList(raw.allowed_files);
+  if (!extra.length) {
+    throw new Error('patch.allowed_files must list the folders or files the patch may change.');
+  }
+  const maxChangedLines = raw.max_changed_lines != null ? Number(raw.max_changed_lines) : DEFAULT_PATCH_LINES;
+  if (!Number.isInteger(maxChangedLines) || maxChangedLines <= 0) {
+    throw new Error(`patch.max_changed_lines must be a positive whole number: ${JSON.stringify(raw.max_changed_lines)}`);
+  }
+  return {
+    id: PATCH_ID,
+    kind: 'patch',
+    feature: String(raw.feature || 'Rework patch'),
+    owner: String(raw.owner || 'patch-agent'),
+    promptFile: normalizeRelPath(raw.prompt_file, 'patch.prompt_file'),
+    patchReport: report,
+    interfaceRequest,
+    allowedFiles: uniqueScopes([report, interfaceRequest, ...extra], 'patch.allowed_files entry'),
+    acceptance: asStringList(raw.acceptance),
+    maxChangedLines,
+    effort: raw.effort != null ? effortLevel(raw.effort, 'patch.effort') : efforts.moduleImplementer,
   };
 }
 
@@ -394,6 +436,41 @@ export function validateManifest(raw, manifestPath) {
   }
   const runId = safeId(raw.run?.id, 'run.id');
   const { preset, efforts, warnings: effortWarnings } = resolveEfforts(raw);
+  const common = {
+    manifestPath: canonicalPath(manifestPath),
+    projectRoot: resolveProjectRoot(raw.project?.root, manifestPath),
+    runId,
+    goal: String(raw.run?.goal || ''),
+    model: AGENT_MODEL,
+    preset,
+    efforts,
+    diagnostics: {
+      compileCommand: commandOrNull(raw.diagnostics?.compile_command),
+      testCommand: commandOrNull(raw.diagnostics?.test_command),
+      timeoutMs: Number(raw.diagnostics?.timeout_ms) || 300000,
+    },
+  };
+  if (raw.patch != null) {
+    if ((Array.isArray(raw.tasks) && raw.tasks.length) || raw.integration) {
+      throw new Error('A patch run has only the patch section: no tasks and no integration.');
+    }
+    const existing = raw.shared_layer?.existing ? uniqueScopes(asStringList(raw.shared_layer.existing), 'shared_layer.existing entry') : [];
+    return {
+      ...common,
+      project: {
+        name: String(raw.project?.name || 'Project'),
+        spec: raw.project?.spec ? String(raw.project.spec) : null,
+        estimatedLines: null,
+      },
+      generatedFiles: normalizeGenerated(raw),
+      sharedLayer: existing.length ? { taskId: null, paths: existing } : null,
+      sizing: null,
+      warnings: effortWarnings,
+      tasks: [],
+      integration: null,
+      patch: normalizePatch(raw.patch, runId, efforts),
+    };
+  }
   if (!Array.isArray(raw.tasks) || !raw.tasks.length) {
     throw new Error('Manifest must contain at least one module task under tasks.');
   }
@@ -417,35 +494,28 @@ export function validateManifest(raw, manifestPath) {
   const moduleCount = tasks.filter((task) => task.id !== sharedLayer?.taskId).length;
   const { sizing, warnings: sizeWarnings } = sizeModules(estimatedLines, moduleCount);
 
-  if (raw.generated_files != null && !Array.isArray(raw.generated_files)) {
-    throw new Error('generated_files must be a list.');
-  }
-  const generatedFiles = [...new Set(asStringList(raw.generated_files).map((entry) => normalizeGeneratedPattern(entry)))];
   return {
-    manifestPath: canonicalPath(manifestPath),
-    projectRoot: resolveProjectRoot(raw.project?.root, manifestPath),
+    ...common,
     project: {
       name: String(raw.project?.name || 'Project'),
       spec: raw.project?.spec ? String(raw.project.spec) : null,
       estimatedLines,
     },
-    runId,
-    goal: String(raw.run?.goal || ''),
-    model: AGENT_MODEL,
-    preset,
-    efforts,
-    diagnostics: {
-      compileCommand: commandOrNull(raw.diagnostics?.compile_command),
-      testCommand: commandOrNull(raw.diagnostics?.test_command),
-      timeoutMs: Number(raw.diagnostics?.timeout_ms) || 300000,
-    },
-    generatedFiles,
+    generatedFiles: normalizeGenerated(raw),
     sharedLayer,
     sizing,
     warnings: [...effortWarnings, ...sizeWarnings],
     tasks,
     integration,
+    patch: null,
   };
+}
+
+function normalizeGenerated(raw) {
+  if (raw.generated_files != null && !Array.isArray(raw.generated_files)) {
+    throw new Error('generated_files must be a list.');
+  }
+  return [...new Set(asStringList(raw.generated_files).map((entry) => normalizeGeneratedPattern(entry)))];
 }
 
 /**
@@ -454,6 +524,15 @@ export function validateManifest(raw, manifestPath) {
  */
 export function estimateRun(manifest, done = new Set()) {
   const { efforts } = manifest;
+  if (manifest.patch) {
+    const run = done.has(PATCH_ID)
+      ? []
+      : [
+          { role: 'patcher', count: 1, effort: manifest.patch.effort },
+          { role: 'module-reviewer', count: 1, effort: efforts.moduleReviewer },
+        ];
+    return { model: manifest.model, preset: manifest.preset, efforts, run, integrate: [], totalAgents: run.length };
+  }
   const pending = manifest.tasks.filter((task) => !done.has(task.id));
   const byEffort = new Map();
   for (const task of pending) {
@@ -488,7 +567,7 @@ export function loadManifest(manifestPath) {
 
 /** Prompt files and existing shared-layer folders that are missing (reported by validate/prepare). */
 export function findMissingPromptFiles(manifest) {
-  const prompts = [...manifest.tasks, manifest.integration]
+  const prompts = [...manifest.tasks, manifest.integration, manifest.patch]
     .filter(Boolean)
     .filter((task) => !fs.existsSync(path.join(manifest.projectRoot, task.promptFile)))
     .map((task) => `${task.id}.prompt_file does not exist: ${task.promptFile}`);
@@ -502,6 +581,9 @@ export function findMissingPromptFiles(manifest) {
 export function findTask(manifest, taskId) {
   if (taskId === INTEGRATION_ID && manifest.integration) {
     return manifest.integration;
+  }
+  if (taskId === PATCH_ID && manifest.patch) {
+    return manifest.patch;
   }
   const task = manifest.tasks.find((entry) => entry.id === taskId);
   if (!task) {

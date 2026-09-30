@@ -3,6 +3,24 @@
 All notable changes to the module-pipeline plugin. Versions follow
 `plugins/module-pipeline/.claude-plugin/plugin.json`.
 
+## 0.6.0 - 2026-09-30
+
+### Added
+
+- Patch runs for small rework. `/module-pipeline:rework` now picks a path: when
+  every open item is a local fix (no contract change, no new module, at most 4
+  module folders, about 300 changed lines or fewer), it writes a patch
+  manifest (`patch:` instead of `tasks` and `integration`). `/module-pipeline:run`
+  then starts the new `patch-run` workflow: one `patcher` agent applies every
+  item in one worktree, and one reviewer merges it, runs the diagnostics and
+  checks each item. Two agents instead of an implementer and a reviewer per
+  module plus the integration stage.
+- The merge counts a patch's changed lines and refuses one over its
+  `max_changed_lines` (default 300) with status `too_large`, keeping the
+  worktree; the next rework takes the module path.
+- The scope hooks cover the `patcher` agent; `finish` and `status` know patch
+  results.
+
 ## 0.5.0 - 2026-09-29
 
 Cheaper agents and better-organized code, from the token analysis of the first

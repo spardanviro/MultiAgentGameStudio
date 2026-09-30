@@ -101,7 +101,9 @@ codebase that splits cleanly into modules.
   against every requirement in the spec.
 - **Plans rework.** The architect turns every failure into a decision (rework
   the same module, create a new one, change a contract, defer, or ask you) and
-  writes the next run's manifest.
+  writes the next run's manifest. Small local fixes go out as one *patch*: a
+  single agent fixes them all and a single reviewer checks them, instead of
+  the whole module and integration path.
 - **Resumes.** Merged modules are recorded, so a rerun only does what is left.
 - **Leaves your checkout free.** You can switch the main checkout to another
   branch and keep working while a run is in progress.
@@ -156,6 +158,7 @@ Roles:
 | `module-reviewer` | one per module | no; it runs the pipeline's merge command, then reviews read-only |
 | `integrator` | one agent in the integration stage | only `integration.allowed_files` |
 | `system-reviewer` | one per integration | no; it runs the glue merge and diagnostics, then reviews read-only |
+| `patcher` | one per patch run (small rework) | only `patch.allowed_files` |
 
 Every role runs on the same model, the newest Opus. What differs is the
 thinking effort, set per role in the manifest (see
@@ -379,11 +382,24 @@ Your session is the Main Architect again.
   diagnostics error and interface request, it picks one decision:
   `reassign_to_same_agent`, `create_new_task`, `contract_change`, `defer` or
   `ask_user`.
-- **Shows you the decision table** before writing anything.
+- **Chooses the path.** If every open item is a local fix (no contract change,
+  no new module, at most 4 module folders, about 300 changed lines or fewer),
+  it takes the **patch** path: one `patcher` agent applies every item in one
+  worktree, and one `module-reviewer` merges the patch, runs the diagnostics
+  and checks each item. That is 2 agents instead of an implementer and a
+  reviewer per module plus the integrator and system reviewer. Anything
+  bigger, or anything that could change how modules work together, takes the
+  **module** path. The merge counts the patch's changed lines and refuses one
+  over its `max_changed_lines` (status `too_large`, worktree kept), so a wrong
+  guess falls back to the module path on the next rework.
+- **Shows you the decision table**, with the chosen path and why, before
+  writing anything.
 - Writes the next run, `<run-id>-r<N>` (rework of `run-001-r1` is `run-001-r2`,
   not `run-001-r1-r1`): `tasks/task_manifest.<next>.yaml`,
-  `work/prompts/<next>/<task>.md` (each quoting the rework items in full), and
-  `reports/rework/<next>_decisions.md`.
+  `work/prompts/<next>/<task>.md` (each quoting the rework items in full; one
+  `patch.md` on the patch path), and `reports/rework/<next>_decisions.md`.
+  Run it with `/module-pipeline:run` either way; it recognizes a patch
+  manifest.
 - Validates, then asks before committing. The new branch starts from the
   current run branch, so the rework builds on what already merged.
 
@@ -566,7 +582,12 @@ Per-module merge results:
 `rework_required`, `integration_failed`, `diagnostics_failed`, `review_missing`
 or `blocked`. `passed` means the run branch is ready for `finish`.
 
-Both stages write `.multiagent/pipeline/runs/<run>-<stage>-result.json` (the raw
+**Patch run** (`/module-pipeline:run` on a patch manifest): `passed` (every item
+resolved, diagnostics clean; next `finish`), `patch_too_large` (over its line
+limit, nothing merged; next `rework`, on the module path), `patch_failed`,
+`rework_required`, `diagnostics_failed` or `review_missing`.
+
+Every stage writes `.multiagent/pipeline/runs/<run>-<stage>-result.json` (the raw
 workflow result) and `<run>-<stage>-report.md` (a readable report with the
 reviewers' rework items).
 
@@ -712,8 +733,8 @@ CHANGELOG.md                           release notes
 plugins/module-pipeline/
   .claude-plugin/plugin.json           plugin manifest
   skills/                              the seven /module-pipeline:* commands
-  agents/                              implementer, integrator, module and system reviewers
-  workflows/                           implement-modules.js, integrate-system.js
+  agents/                              implementer, integrator, patcher, module and system reviewers
+  workflows/                           implement-modules.js, integrate-system.js, patch-run.js
   hooks/hooks.json                     PreToolUse scope guard, PostToolUse shell check
   scripts/pipeline.mjs                 CLI: validate, commit-planning, prepare, claim,
                                        integrate-task, diagnostics, status, clean, finish

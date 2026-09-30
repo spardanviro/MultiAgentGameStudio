@@ -77,7 +77,8 @@ module-pipeline 把这些都变成由工具强制执行的规则，而不是只�
 - **集成。** 单独的集成阶段编写把各模块组装起来的胶水代码，遵守同样的范围规则；随后系统审查者对照需求文档
   逐条打分。
 - **规划返工。** 架构师把每个失败项变成一个决定（交回同一模块返工、新建模块、修改契约、暂缓，或者问你），
-  并写出下一轮的 manifest。
+  并写出下一轮的 manifest。小的局部修改会作为一个**补丁**下发：一个智能体改完全部问题、一个审查者核对，
+  不必走完整的模块和集成流程。
 - **断点续跑。** 已合并的模块会被记录下来，重新运行时只做剩下的部分。
 - **不占用你的工作区。** 运行进行中，你可以把主工作区切到别的分支继续工作。
 - **所有智能体都用最强的模型。** 所有职责统一使用 Opus（始终是最新版），区别只在思考强度，由你按职责
@@ -125,6 +126,7 @@ flowchart TD
 | `module-reviewer` | 每个模块一个 | 不能；先运行流水线的合并命令，再只读审查 |
 | `integrator` | 集成阶段的一个智能体 | 只能写 `integration.allowed_files` |
 | `system-reviewer` | 每次集成一个 | 不能；先合并胶水代码并运行诊断，再只读审查 |
+| `patcher` | 每个补丁轮次一个（小改动返工） | 只能写 `patch.allowed_files` |
 
 所有职责都用同一个模型，也就是最新的 Opus。不同的只是思考强度，在 manifest 里按职责设置（见
 [模型与思考强度](#模型与思考强度)）。
@@ -299,10 +301,17 @@ flowchart TD
 - 对每个阻塞性审查项、失败或被跳过的模块、越界、诊断错误和接口请求，选择一个决定：
   `reassign_to_same_agent`（交回同一模块）、`create_new_task`（新建模块）、`contract_change`（修改契约）、
   `defer`（暂缓）或 `ask_user`（问你）。
-- **写任何东西之前，先把决定表给你看。**
+- **选择返工路径。** 如果所有未解决的问题都是局部修改（不改契约、不新建模块、最多涉及 4 个模块文件夹、
+  预计改动不超过约 300 行），就走**补丁**路径：一个 `patcher` 智能体在一个 worktree 里改完所有问题，一个
+  `module-reviewer` 合并补丁、运行诊断并逐条核对。这样只要 2 个智能体，而不是每个模块一个实现者加一个审查者，
+  再加集成者和系统审查者。更大的改动，或可能影响模块之间协作的改动，走**模块**路径。合并时会实际统计补丁的
+  改动行数，超过 `max_changed_lines` 就拒绝合并（状态 `too_large`，保留 worktree），下一次返工改走模块路径，
+  所以判断失误也不会跳过模块审查和系统审查。
+- **写任何东西之前，先把决定表给你看**，包括选择的路径和理由。
 - 写出下一轮 `<run-id>-r<N>`（`run-001-r1` 的返工是 `run-001-r2`，不是 `run-001-r1-r1`）：
   `tasks/task_manifest.<next>.yaml`、`work/prompts/<next>/<task>.md`（每份都完整引用对应的返工项），以及
-  `reports/rework/<next>_decisions.md`。
+  `reports/rework/<next>_decisions.md`。补丁路径只写一份 `patch.md`。两种路径都用 `/module-pipeline:run` 运行，
+  它会自动识别补丁 manifest。
 - 校验后，提交前再问你一次。新分支从当前运行分支出发，所以返工建立在已合并的成果之上。
 
 ### `/module-pipeline:status [run-id]`
@@ -462,7 +471,11 @@ integration:
 **集成阶段**（`/module-pipeline:integrate`）的状态有 `passed`、`rework_required`、`integration_failed`、
 `diagnostics_failed`、`review_missing` 和 `blocked`。`passed` 表示运行分支可以进入 `finish` 了。
 
-两个阶段都会写出 `.multiagent/pipeline/runs/<run>-<stage>-result.json`（工作流的原始结果）和
+**补丁轮次**（对补丁 manifest 运行 `/module-pipeline:run`）的状态有 `passed`（所有问题已解决、诊断通过，下一步
+`finish`）、`patch_too_large`（超过行数上限，没有合并，下一步 `rework`，改走模块路径）、`patch_failed`、
+`rework_required`、`diagnostics_failed` 或 `review_missing`。
+
+每个阶段都会写出 `.multiagent/pipeline/runs/<run>-<stage>-result.json`（工作流的原始结果）和
 `<run>-<stage>-report.md`（可读报告，包含审查者给出的返工项）。
 
 ## 返工循环
@@ -573,8 +586,8 @@ CHANGELOG.md                           版本更新记录
 plugins/module-pipeline/
   .claude-plugin/plugin.json           插件清单
   skills/                              七个 /module-pipeline:* 命令
-  agents/                              实现者、集成者、模块审查者、系统审查者
-  workflows/                           implement-modules.js、integrate-system.js
+  agents/                              实现者、集成者、补丁智能体、模块审查者、系统审查者
+  workflows/                           implement-modules.js、integrate-system.js、patch-run.js
   hooks/hooks.json                     PreToolUse 写入范围守卫、PostToolUse shell 检查
   scripts/pipeline.mjs                 CLI：validate、commit-planning、prepare、claim、
                                        integrate-task、diagnostics、status、clean、finish

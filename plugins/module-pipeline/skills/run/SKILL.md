@@ -60,6 +60,23 @@ own folder. Its reviewer then audits and commits it on branch
 `multiagent-runs/<run-id>` and reviews it read-only. A rerun skips modules
 that are already merged.
 
+**Patch manifests.** When validate reports `mode: patch` (a small rework
+written by `/module-pipeline:rework`), tell the user the patch starts 2
+agents (a patcher and a reviewer, from `estimate.run`) and its line limit,
+then start `${CLAUDE_PLUGIN_ROOT}/workflows/patch-run.js` with the same
+`workflowArgs`. Skip step 3: the patch reviewer already ran the diagnostics.
+In step 4 use `<runId>-patch-result.json` and `<runId>-patch-report.md`
+(items, what the patcher changed, the merge, the diagnostics, the
+reviewer's `rework_items`), and these statuses:
+
+- `passed`: every item resolved, diagnostics clean. Next:
+  `/module-pipeline:finish <runId>`.
+- `patch_too_large`: the patch changed more lines than its limit; nothing
+  was merged and its worktree is kept. Next: `/module-pipeline:rework <runId>`,
+  which then takes the module path.
+- `patch_failed` (with the merge status and reason), `rework_required`,
+  `diagnostics_failed`, `review_missing`: next `/module-pipeline:rework <runId>`.
+
 ## 3. Diagnostics
 
 When the workflow returns and at least one module merged in this or an

@@ -102,13 +102,21 @@ export async function runWorkflow(name, { root, args, scenario }) {
         return actInWorktree(root, prompt, (ctx) => scenario.implement({ ...ctx, prompt, root }));
       case 'module-pipeline:integrator':
         return actInWorktree(root, prompt, (ctx) => scenario.integrate({ ...ctx, prompt, root }));
+      case 'module-pipeline:patcher':
+        return actInWorktree(root, prompt, (ctx) => scenario.patch({ ...ctx, prompt, root }));
       case 'module-pipeline:module-reviewer': {
         const merged = runPromptCommand(prompt, 'integrate-task', root);
+        const merge = { ...mergeFields(merged), changedLines: merged.changedLines };
         if (!merged.ok) {
-          return { merge: mergeFields(merged), verdict: 'not_merged', summary: 'not merged', rework_items: [] };
+          return { merge, verdict: 'not_merged', summary: 'not merged', rework_items: [] };
         }
-        const taskId = prompt.match(/Review module "([^"]+)"/)[1];
-        return { merge: mergeFields(merged), ...scenario.review(taskId, prompt, merged) };
+        const diagnostics = runPromptCommand(prompt, 'diagnostics', root);
+        const taskId = merged.taskId;
+        return {
+          merge,
+          ...(diagnostics ? { diagnostics: { failed: Boolean(diagnostics.failed), summary: diagnostics.ran ? 'ran' : 'nothing configured' } } : {}),
+          ...scenario.review(taskId, prompt, merged),
+        };
       }
       case 'module-pipeline:system-reviewer': {
         const merged = runPromptCommand(prompt, 'integrate-task', root);

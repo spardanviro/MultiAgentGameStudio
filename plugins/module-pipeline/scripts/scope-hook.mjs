@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// Scope hooks for pipeline writers (the module-implementer and integrator
-// agents); every other session and agent passes through untouched.
+// Scope hooks for pipeline writers (the module-implementer, integrator and
+// patcher agents); every other session and agent passes through untouched.
 //
 // PreToolUse (Edit/Write/MultiEdit/NotebookEdit): a pipeline writer must work
 // inside its own claimed worktree and may only write the files its task
@@ -17,7 +17,7 @@ import { samePath } from './lib/paths.mjs';
 import { auditChanges, createScopeMatcher, toRootRelative } from './lib/scope.mjs';
 import { findGitRoot, projectRootForWorktree, readClaim } from './lib/state.mjs';
 
-const WRITER_AGENT = /(^|:)(module-implementer|integrator)$/;
+const WRITER_AGENT = /(^|:)(module-implementer|integrator|patcher)$/;
 const MAX_LISTED = 15;
 
 const isWriter = (input) => WRITER_AGENT.test(String(input?.agent_type || ''));

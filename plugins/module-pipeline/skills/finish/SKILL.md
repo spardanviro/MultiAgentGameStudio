@@ -30,8 +30,8 @@ Tell the user:
 - Every run in the chain with its task statuses and diagnostics.
 - Warnings, if any:
   - `latest.integration` is missing or not `passed` (or, without an
-    integration section, `latest.modules` is not `passed`), with the open
-    `blockingItems`.
+    integration section, `latest.modules` is not `passed`; for a patch run,
+    `latest.patch` is not `passed`), with the open `blockingItems`.
   - `behind` is above 0: the base branch has moved on, so merging may
     conflict. Offer to merge the base branch into the run branch first.
 - The PR description draft at `prDraftPath`. Read it, tighten it into a

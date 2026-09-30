@@ -133,14 +133,14 @@ test('an existing shared-layer folder must exist', () => {
 test('pipeline agents start without CLAUDE.md files, and no relay agent exists', () => {
   const agentsDir = path.join(PLUGIN_ROOT, 'agents');
   const names = fs.readdirSync(agentsDir).sort();
-  assert.deepEqual(names, ['integrator.md', 'module-implementer.md', 'module-reviewer.md', 'system-reviewer.md']);
+  assert.deepEqual(names, ['integrator.md', 'module-implementer.md', 'module-reviewer.md', 'patcher.md', 'system-reviewer.md']);
   for (const name of names) {
     const text = fs.readFileSync(path.join(agentsDir, name), 'utf8');
     const frontmatter = yaml.load(text.match(/^---\r?\n([\s\S]*?)\r?\n---/)[1]);
     assert.equal(frontmatter.omitClaudeMd, true, `${name} omits CLAUDE.md`);
     assert.ok(text.length < 3000, `${name} stays short (${text.length} chars)`);
   }
-  for (const name of ['implement-modules.js', 'integrate-system.js']) {
+  for (const name of ['implement-modules.js', 'integrate-system.js', 'patch-run.js']) {
     const source = fs.readFileSync(path.join(PLUGIN_ROOT, 'workflows', name), 'utf8');
     assert.doesNotMatch(source, /pipeline-ops/, `${name} starts no relay agent`);
   }

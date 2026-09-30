@@ -111,6 +111,35 @@ the shared layer, falls outside this band:
 | 5,000-15,000 | 4-12 |
 | 15,000 and more | 8-20 |
 
+## Patch runs
+
+`/module-pipeline:rework` writes a patch manifest when every open item is a
+small local fix. It has a `patch:` section instead of `tasks` and
+`integration`:
+
+```yaml
+version: 1
+project: { name: Card Game, spec: docs/spec.md }
+run: { id: run-001-r1, goal: Fix the opening balance }
+shared_layer: { existing: [src/shared/] }   # optional, shown to the agents
+patch:
+  prompt_file: work/prompts/run-001-r1/patch.md   # every item quoted in full
+  allowed_files: [src/data/, tests/data/, tests/enemies/]
+  acceptance:                     # one line per item
+    - Bats move at 85 px/s
+    - The first wave spawns one bat every 1.5 s
+  max_changed_lines: 300          # default; added plus deleted lines, tests included
+  effort: medium                  # optional; default effort.module_implementer
+  # patch_report / interface_request default to work/patches/<run>_*.md
+```
+
+One `patcher` agent applies every item in an isolated worktree, limited to
+`allowed_files`, which may span several module folders. One reviewer then
+merges it, runs the diagnostics and checks each item. There is no
+integration stage and no system review. The merge refuses a patch whose
+in-scope diff is larger than `max_changed_lines` (status `too_large`); its
+worktree is kept, and the next rework takes the module path.
+
 ## Generated files
 
 Engines and tools write files nobody asked for: Godot's `.uid` and `.import`

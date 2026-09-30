@@ -72,7 +72,7 @@ test('merging removes a worktree even when Claude Code locked it', () => {
 });
 
 test('workflow scripts contain no carriage returns or other control characters', () => {
-  for (const name of ['implement-modules.js', 'integrate-system.js']) {
+  for (const name of ['implement-modules.js', 'integrate-system.js', 'patch-run.js']) {
     const source = fs.readFileSync(path.join(PLUGIN_ROOT, 'workflows', name), 'utf8');
     assert.doesNotMatch(source, /[\u0000-\u0008\u000b-\u001f\u007f]/, `${name} must be plain LF text`);
   }

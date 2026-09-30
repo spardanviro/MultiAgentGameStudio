@@ -21,6 +21,8 @@ import {
   branchTip,
   changedBetween,
   changedFiles,
+  changedLineCount,
+  changedLineCountBetween,
   commitFiles,
   commitPatchOnRunBranch,
   createPatch,
@@ -124,12 +126,13 @@ function taskInfo(task) {
     testFile: task.testFile || null,
     supportFolder: task.supportFolder || null,
     promptFile: task.promptFile,
-    report: task.moduleReport || task.integrationReport,
+    report: task.moduleReport || task.integrationReport || task.patchReport,
     interfaceRequest: task.interfaceRequest,
     allowedFiles: task.allowedFiles,
     acceptance: task.acceptance,
     dependsOn: task.dependsOn || [],
     effort: task.effort,
+    ...(task.maxChangedLines ? { maxChangedLines: task.maxChangedLines } : {}),
   };
 }
 
@@ -206,6 +209,8 @@ function cmdValidate({ positional }) {
     warnings: manifest.warnings,
     runId: manifest.runId,
     projectRoot: manifest.projectRoot,
+    mode: manifest.patch ? 'patch' : 'modules',
+    patch: manifest.patch ? taskInfo(manifest.patch) : null,
     modules: manifest.tasks.map((task) => ({ id: task.id, owns: task.ownedFolder || task.ownedScript })),
     sharedLayer: manifest.sharedLayer,
     sizing: manifest.sizing,
@@ -288,6 +293,24 @@ function cmdPrepare({ positional, flags }) {
     model: manifest.model,
     efforts: manifest.efforts,
   };
+
+  if (manifest.patch) {
+    if (flags.stage === 'integration') {
+      return { ok: false, errors: ['A patch run has no integration stage; its reviewer runs the diagnostics.'] };
+    }
+    const patch = merged.includes(manifest.patch.id) ? null : taskInfo(manifest.patch);
+    return {
+      ...base,
+      mode: 'patch',
+      patch,
+      sharedLayer: manifest.sharedLayer,
+      workflowArgs: {
+        ...workflowBase,
+        mode: 'patch',
+        patch: patch ? { effort: patch.effort, maxChangedLines: patch.maxChangedLines } : null,
+      },
+    };
+  }
 
   if (flags.stage === 'integration') {
     if (!manifest.integration) {
@@ -402,6 +425,20 @@ function commitTask(root, state, task, patch) {
   );
 }
 
+// A patch run is for small fixes; a larger one belongs on the full module path.
+// Its worktree is kept so the work is not lost.
+function sizeProblem(task, changedLines) {
+  if (task.kind !== 'patch' || changedLines <= task.maxChangedLines) {
+    return null;
+  }
+  return {
+    status: 'too_large',
+    changedLines,
+    maxChangedLines: task.maxChangedLines,
+    reason: `The patch changes ${changedLines} lines, more than its limit of ${task.maxChangedLines}. Rework it on the module path.`,
+  };
+}
+
 // The harness may remove a worktree whose working tree is clean even though
 // the agent committed its work there; the claim's branch still holds it.
 function integrateFromBranch(root, state, task, claim, claims, generatedFiles) {
@@ -420,6 +457,10 @@ function integrateFromBranch(root, state, task, claim, claims, generatedFiles) {
     dropClaims(root, claims);
     return { status: 'empty', reason: 'The agent changed only generated files outside its scope.', dropped };
   }
+  const tooLarge = sizeProblem(task, changedLineCountBetween(root, claim.base, tip, inScope));
+  if (tooLarge) {
+    return { ...tooLarge, files: inScope, branch: claim.branch };
+  }
   const patch = createPatchBetween(root, claim.base, tip, inScope, patchPath(root, state.runId, task.id));
   const { commit, via } = commitTask(root, state, task, patch);
   deleteBranch(root, claim.branch);
@@ -435,6 +476,10 @@ function integrateClaim(root, state, task, claim, claims, generatedFiles) {
   const { inScope, violations, dropped } = auditChanges(changed, task.allowedFiles, generatedFiles);
   if (violations.length) {
     return { status: 'violation', violations, changed, worktree: claim.worktree };
+  }
+  const tooLarge = sizeProblem(task, changedLineCount(claim.worktree, claim.base, inScope));
+  if (tooLarge) {
+    return { ...tooLarge, files: inScope, worktree: claim.worktree };
   }
   const patch = inScope.length ? createPatch(claim.worktree, claim.base, inScope, patchPath(root, state.runId, task.id)) : null;
   if (!patch) {
@@ -651,7 +696,11 @@ function prDraft({ runBranch, base, commits, shortstat, runs, latest }) {
     }
     lines.push('');
   }
-  const open = [...(latest.modules?.blockingItems || []), ...(latest.integration?.blockingItems || [])];
+  const open = [
+    ...(latest.modules?.blockingItems || []),
+    ...(latest.integration?.blockingItems || []),
+    ...(latest.patch?.blockingItems || []),
+  ];
   if (open.length) {
     lines.push('## Open blocking items', '', ...open.map((item) => `- ${item.issue_id}: ${item.problem}`), '');
   }
@@ -688,7 +737,11 @@ function cmdFinish({ flags }) {
     tasks: Object.fromEntries(Object.entries(run.tasks).map(([id, entry]) => [id, entry.status])),
     diagnostics: run.diagnostics ? { failed: run.diagnostics.failed, tests: run.diagnostics.tests || null } : null,
   }));
-  const latest = { modules: readResult(root, runId, 'modules'), integration: readResult(root, runId, 'integration') };
+  const latest = {
+    modules: readResult(root, runId, 'modules'),
+    integration: readResult(root, runId, 'integration'),
+    patch: readResult(root, runId, 'patch'),
+  };
   const prDraftPath = path.join(pipelineDir(root), 'runs', `${runId}-pr.md`);
   fs.mkdirSync(path.dirname(prDraftPath), { recursive: true });
   fs.writeFileSync(prDraftPath, prDraft({ runBranch, base, commits, shortstat, runs, latest }), 'utf8');

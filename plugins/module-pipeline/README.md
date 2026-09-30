@@ -20,7 +20,10 @@ A Claude Code plugin that runs a spec-driven, multi-agent build:
    glue code; the system reviewer commits it, runs diagnostics and checks the
    whole result against the spec.
 4. **`/module-pipeline:rework <run-id>`**: the Main Architect decides every
-   failure and blocking review item and writes the next run's manifest.
+   failure and blocking review item and writes the next run's manifest. When
+   every item is a small local fix, it writes a *patch* instead: one patcher
+   agent fixes everything in one worktree and one reviewer merges it, runs the
+   diagnostics and checks each item. Bigger changes take the full module path.
 5. **`/module-pipeline:status [run-id]`**: where every run stands.
 6. **`/module-pipeline:finish <run-id> [base]`**: summarizes the run branch
    against the main branch, drafts a PR description, and merges, squashes or
@@ -59,11 +62,14 @@ A Claude Code plugin that runs a spec-driven, multi-agent build:
 - **Module count fits the project size.** `project.estimated_lines` lets
   validate warn when a run has too many small modules (each one costs a full
   agent session and a review) or too few large ones.
+- **Patches stay small.** The merge counts a patch's changed lines and refuses
+  one over its `max_changed_lines`, so a misjudged "small" fix falls back to
+  the module path instead of skipping the module and system reviews.
 - **Reruns are incremental.** Merged modules are recorded in
   `.multiagent/pipeline/runs/<run-id>.json` and skipped next time.
 
-The hooks only act on the plugin's own `module-implementer` and `integrator`
-agents; other sessions and agents are never affected.
+The hooks only act on the plugin's own `module-implementer`, `integrator` and
+`patcher` agents; other sessions and agents are never affected.
 
 ## Model and thinking effort
 
@@ -142,14 +148,14 @@ its own.
   as written in the manifest, in a checkout of the run branch.
 - **Claude Code agents** started by the workflows, all on the `opus` model:
   one implementer and one reviewer per module, an integrator and a system
-  reviewer. They use Claude Code's normal
+  reviewer, or for a patch run one patcher and one reviewer. They use Claude Code's normal
   tools under your permission settings; implementers and the integrator also
   run your project's build and tests.
 
 ### Hooks it installs
 
 Both hooks run `node "${CLAUDE_PLUGIN_ROOT}/scripts/scope-hook.mjs"` and act
-only on this plugin's own `module-implementer` and `integrator` agents. For
+only on this plugin's own `module-implementer`, `integrator` and `patcher` agents. For
 every other session and agent they exit immediately and change nothing.
 
 - **`PreToolUse` on Edit, Write, MultiEdit and NotebookEdit**: reads the

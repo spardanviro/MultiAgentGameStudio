@@ -39,11 +39,13 @@ Run `CLI prepare "MANIFEST" --stage integration` from the project root. If
 `ok` is false, show the errors and stop (status `blocked`).
 
 This command invocation is the user's authorization. Pass the
-`workflowArgs` object from the prepare output as `args`, exactly as printed:
+`workflowArgs` object from the prepare output as `args`, exactly as printed,
+and its `workflowScript` (a copy inside the project; Claude Code only runs
+workflow scripts from folders the session can read) as `scriptPath`:
 
 ```
 Workflow({
-  scriptPath: "${CLAUDE_PLUGIN_ROOT}/workflows/integrate-system.js",
+  scriptPath: <workflowScript from prepare>,
   args: <workflowArgs from prepare>
 })
 ```

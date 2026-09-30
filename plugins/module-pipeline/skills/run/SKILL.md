@@ -45,12 +45,14 @@ agents that starts with which thinking effort (from `estimate.run` in the
 validate output; every agent runs on `estimate.model`), then start the
 workflow. Mention that they may switch the main checkout to another branch
 and keep working while it runs. This command invocation is the user's
-authorization. Pass the `workflowArgs` object from the prepare output as
-`args`, exactly as printed:
+authorization. Use the `workflowScript` path from the prepare output (prepare
+copies the script into the project, because Claude Code only runs workflow
+scripts from folders the session can read) and pass the `workflowArgs`
+object as `args`, exactly as printed:
 
 ```
 Workflow({
-  scriptPath: "${CLAUDE_PLUGIN_ROOT}/workflows/implement-modules.js",
+  scriptPath: <workflowScript from prepare>,
   args: <workflowArgs from prepare>
 })
 ```
@@ -63,8 +65,8 @@ that are already merged.
 **Patch manifests.** When validate reports `mode: patch` (a small rework
 written by `/module-pipeline:rework`), tell the user the patch starts 2
 agents (a patcher and a reviewer, from `estimate.run`) and its line limit,
-then start `${CLAUDE_PLUGIN_ROOT}/workflows/patch-run.js` with the same
-`workflowArgs`. Skip step 3: the patch reviewer already ran the diagnostics.
+then start the workflow the same way: prepare's `workflowScript` is then the
+patch workflow, with its `workflowArgs`. Skip step 3: the patch reviewer already ran the diagnostics.
 In step 4 use `<runId>-patch-result.json` and `<runId>-patch-report.md`
 (items, what the patcher changed, the merge, the diagnostics, the
 reviewer's `rework_items`), and these statuses:

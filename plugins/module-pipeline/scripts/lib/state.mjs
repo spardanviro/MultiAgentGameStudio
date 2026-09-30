@@ -39,8 +39,18 @@ export function runStatePath(root, runId) {
   return path.join(pipelineDir(root), 'runs', `${runId}.json`);
 }
 
+// Workflow results the skills record beside a run's state, as <run>-<stage>-result.json.
+export const RESULT_STAGES = ['modules', 'integration', 'patch'];
+const RESULT_FILE = new RegExp(`-(${RESULT_STAGES.join('|')})-result\\.json$`);
+
+export function resultPath(root, runId, stage) {
+  return path.join(pipelineDir(root), 'runs', `${runId}-${stage}-result.json`);
+}
+
+/** The run's state, or null when there is none (or the file is not a run state). */
 export function loadRunState(root, runId) {
-  return readJson(runStatePath(root, runId));
+  const state = readJson(runStatePath(root, runId));
+  return state && typeof state.runId === 'string' && state.tasks && typeof state.tasks === 'object' ? state : null;
 }
 
 export function saveRunState(root, state) {
@@ -63,7 +73,7 @@ export function listRunIds(root) {
   }
   return fs
     .readdirSync(dir)
-    .filter((name) => name.endsWith('.json') && !/-(modules|integration)-result\.json$/.test(name))
+    .filter((name) => name.endsWith('.json') && !RESULT_FILE.test(name))
     .map((name) => name.slice(0, -5));
 }
 

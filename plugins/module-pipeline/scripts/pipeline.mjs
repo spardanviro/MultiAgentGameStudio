@@ -4,8 +4,8 @@
 //
 //   validate <manifest>                       check a manifest, plan waves, count agents per role and effort
 //   commit-planning <manifest>                commit the architect's output on the run branch
-//   prepare <manifest> [--stage integration]  check the project, return pending waves / the integration task
-//                                             and the args for the stage's workflow
+//   prepare <manifest> [--stage integration]  check the project, return pending waves / the integration task,
+//                                             the stage's workflow script (copied into the project) and its args
 //   claim --run <id> --task <id>              (inside an agent worktree) bind the worktree to a task, print the task
 //   integrate-task --run <id> --task <id>     audit a task's worktree and commit its changes on the run branch
 //   diagnostics --run <id>                    run the manifest's compile and test commands on the run branch
@@ -61,6 +61,8 @@ import {
   readClaim,
   readJson,
   removeClaim,
+  RESULT_STAGES,
+  resultPath,
   runStatePath,
   saveRunState,
   withLock,
@@ -155,6 +157,18 @@ function loadOrInitState(manifest) {
     diagnostics: existing?.diagnostics || null,
     manifestPath: manifest.manifestPath,
   };
+}
+
+/**
+ * Copies a stage's workflow script into the project and returns the copy's
+ * path. Claude Code runs a workflow script only from a folder the session can
+ * read, which the plugin cache is not; `.multiagent/` is git-ignored.
+ */
+function stageWorkflowScript(root, name) {
+  const target = path.join(pipelineDir(root), 'workflows', name);
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  fs.copyFileSync(path.join(PLUGIN_ROOT, 'workflows', name), target);
+  return target.replace(/\\/g, '/');
 }
 
 /**
@@ -303,6 +317,7 @@ function cmdPrepare({ positional, flags }) {
       ...base,
       mode: 'patch',
       patch,
+      workflowScript: stageWorkflowScript(root, 'patch-run.js'),
       sharedLayer: manifest.sharedLayer,
       workflowArgs: {
         ...workflowBase,
@@ -325,6 +340,7 @@ function cmdPrepare({ positional, flags }) {
       ...base,
       integration,
       modules: manifest.tasks.map(taskInfo),
+      workflowScript: stageWorkflowScript(root, 'integrate-system.js'),
       workflowArgs: {
         ...workflowBase,
         spec: manifest.project.spec,
@@ -341,6 +357,7 @@ function cmdPrepare({ positional, flags }) {
     skipped: merged,
     sharedLayer: manifest.sharedLayer,
     waves,
+    workflowScript: stageWorkflowScript(root, 'implement-modules.js'),
     workflowArgs: {
       ...workflowBase,
       skipped: merged,
@@ -680,7 +697,7 @@ function relatedRuns(root, runId) {
 }
 
 function readResult(root, runId, stage) {
-  const result = readJson(path.join(pipelineDir(root), 'runs', `${runId}-${stage}-result.json`));
+  const result = readJson(resultPath(root, runId, stage));
   return result ? { status: result.status || null, blockingItems: result.blockingItems || [] } : null;
 }
 
@@ -737,11 +754,7 @@ function cmdFinish({ flags }) {
     tasks: Object.fromEntries(Object.entries(run.tasks).map(([id, entry]) => [id, entry.status])),
     diagnostics: run.diagnostics ? { failed: run.diagnostics.failed, tests: run.diagnostics.tests || null } : null,
   }));
-  const latest = {
-    modules: readResult(root, runId, 'modules'),
-    integration: readResult(root, runId, 'integration'),
-    patch: readResult(root, runId, 'patch'),
-  };
+  const latest = Object.fromEntries(RESULT_STAGES.map((stage) => [stage, readResult(root, runId, stage)]));
   const prDraftPath = path.join(pipelineDir(root), 'runs', `${runId}-pr.md`);
   fs.mkdirSync(path.dirname(prDraftPath), { recursive: true });
   fs.writeFileSync(prDraftPath, prDraft({ runBranch, base, commits, shortstat, runs, latest }), 'utf8');

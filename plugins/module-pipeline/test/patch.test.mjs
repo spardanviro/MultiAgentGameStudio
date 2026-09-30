@@ -112,6 +112,25 @@ test('patch workflow: one patcher fixes several folders, one reviewer merges, ru
   assert.equal(again.result.alreadyMerged, true);
 });
 
+test('finish and status read a patch run whose result file sits beside the run state', async () => {
+  const { root, manifest } = patchProject();
+  const { result } = await runPatch(root, manifest, {
+    patch: ({ write: put }) => {
+      put('src/player/player.gd', 'class_name Player\nconst SPEED = 85\n');
+      return { summary: 'speed 85', testsRun: 'none', blockers: [] };
+    },
+    review: () => PASS,
+  });
+  // The run skill records the workflow result next to the run state.
+  write(root, '.multiagent/pipeline/runs/run-001-r1-patch-result.json', JSON.stringify(result));
+
+  assert.deepEqual(cli(root, 'status').json.runs.map((run) => run.runId), ['run-001-r1']);
+  const finished = cli(root, 'finish', '--run', 'run-001-r1').json;
+  assert.equal(finished.ok, true, JSON.stringify(finished));
+  assert.deepEqual(finished.runs.map((run) => run.runId), ['run-001-r1']);
+  assert.equal(finished.latest.patch.status, 'passed');
+});
+
 test('a patch larger than its line limit is not merged; its worktree is kept for the module path', async () => {
   const { root, manifest } = patchProject(5);
   const big = Array.from({ length: 12 }, (_, index) => `var v${index} = ${index}`).join('\n');

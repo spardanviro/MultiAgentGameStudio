@@ -3,6 +3,20 @@
 All notable changes to the module-pipeline plugin. Versions follow
 `plugins/module-pipeline/.claude-plugin/plugin.json`.
 
+## 0.6.1 - 2026-09-30
+
+### Fixed
+
+- `finish` and `status` failed after a patch run: the `<run>-patch-result.json` file the
+  run skill writes was listed as a run of its own. Result files of every stage
+  are now recognized from one list, and a JSON file that is not a run state is
+  never loaded as one.
+- The Workflow tool refused to start the plugin's workflow scripts from the
+  plugin cache (it only runs scripts from folders the session can read).
+  `prepare` now copies the stage's script into `.multiagent/pipeline/workflows/`
+  (git-ignored) and returns its path as `workflowScript`; `run` and `integrate`
+  start the workflow from there.
+
 ## 0.6.0 - 2026-09-30
 
 ### Added

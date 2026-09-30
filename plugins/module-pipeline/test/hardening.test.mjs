@@ -87,3 +87,14 @@ test('the architect skills think at high effort and the others at medium, all on
     assert.equal(frontmatter.model, 'opus', `${skill} model`);
   }
 });
+
+test('prepare copies the stage workflow script into the git-ignored project folder', () => {
+  const { root, manifest } = makeProject();
+  const modules = cli(root, 'prepare', manifest).json;
+  assert.match(modules.workflowScript, /\.multiagent\/pipeline\/workflows\/implement-modules\.js$/);
+  assert.equal(
+    fs.readFileSync(modules.workflowScript, 'utf8'),
+    fs.readFileSync(path.join(PLUGIN_ROOT, 'workflows', 'implement-modules.js'), 'utf8'),
+  );
+  assert.equal(git(root, 'status', '--porcelain'), '', 'the copy never shows up as a project change');
+});

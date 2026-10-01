@@ -50,7 +50,7 @@ import {
   worktreeForBranch,
 } from './lib/git.mjs';
 import { estimateRun, findMissingPromptFiles, findTask, loadManifest, planWaves } from './lib/manifest.mjs';
-import { samePath } from './lib/paths.mjs';
+import { canonicalPath, samePath } from './lib/paths.mjs';
 import { diagnosticsLine, openItems, reportMarkdown } from './lib/report.mjs';
 import { auditChanges } from './lib/scope.mjs';
 import {
@@ -146,7 +146,8 @@ function resolveManifest(positional) {
   if (!positional[0]) {
     throw new UsageError('A manifest path is required.');
   }
-  const absolute = path.resolve(positional[0]);
+  // Canonical, so it compares with git's paths whatever spelling the caller used (Windows 8.3 short names).
+  const absolute = canonicalPath(path.resolve(positional[0]));
   if (fs.existsSync(absolute)) {
     const manifest = loadManifest(absolute);
     const root = manifest.projectRoot;

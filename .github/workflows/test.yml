@@ -33,10 +33,7 @@ jobs:
       - name: Report failing tests as annotations
         if: failure()
         shell: bash
-        run: |
-          grep -E "^✖|AssertionError|Error:|expected|actual" test-output.txt | head -60 | while IFS= read -r line; do
-            echo "::error::${line}"
-          done
+        run: node .github/scripts/annotate-failures.mjs test-output.txt
 
   validate:
     name: plugin validate

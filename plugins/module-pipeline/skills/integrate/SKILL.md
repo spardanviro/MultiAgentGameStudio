@@ -14,34 +14,28 @@ Manifest: `$manifest` (if empty, use `tasks/task_manifest.yaml`). Resolve it
 to an absolute path; call that MANIFEST below. CLI below means
 `node "${CLAUDE_PLUGIN_ROOT}/scripts/pipeline.mjs"`.
 
-## 1. Check before launching
+Every call you make carries the whole conversation, so keep this stage to the
+few calls below. The CLI checks the project and writes the result and the
+report; do not repeat its work with git or file commands.
 
-Read `.multiagent/pipeline/runs/<runId>-modules-result.json` if it exists
-(run id from the manifest). If its status is not `passed`, tell the user
-which blocking items or failures are open and ask whether to integrate
-anyway. Stop unless they say yes.
+## 1. Prepare
 
-Check that `git rev-parse --show-toplevel` is the project root (the folder
-above the manifest's `tasks/`); agent worktrees come from the session's
-repository. If not, stop and ask the user to move the session there. Do not
-`cd` elsewhere until the workflow finishes.
+Run `CLI prepare "MANIFEST" --stage integration` from the project root.
 
-If the current branch is the run branch, make sure nothing outside
-`.multiagent/` and `.claude/worktrees/` is uncommitted
-(`git status --porcelain`); if something is, handle it as
-/module-pipeline:run does: ask, and commit only with a yes via
-`CLI commit-planning "MANIFEST"`. On any other branch, uncommitted files are
-the user's own work.
+- `ok: false` with `uncommitted` files: handle it as /module-pipeline:run
+  does: ask, and commit only with a yes via `CLI commit-planning "MANIFEST"`,
+  then prepare again.
+- Any other error (modules not merged yet, the session is not in the
+  project): show it and stop (status `blocked`). Do not `cd` elsewhere.
+- `modulesStatus` is not `passed`: tell the user the module stage did not
+  pass (its report is `.multiagent/pipeline/runs/<runId>-modules-report.md`)
+  and ask whether to integrate anyway. Stop unless they say yes.
 
-## 2. Prepare and launch the workflow
+## 2. Launch the workflow
 
-Run `CLI prepare "MANIFEST" --stage integration` from the project root. If
-`ok` is false, show the errors and stop (status `blocked`).
-
-This command invocation is the user's authorization. Pass the
-`workflowArgs` object from the prepare output as `args`, exactly as printed,
-and its `workflowScript` (a copy inside the project; Claude Code only runs
-workflow scripts from folders the session can read) as `scriptPath`:
+This command invocation is the user's authorization. Start the workflow with
+the `workflowScript` and `workflowArgs` from the prepare output, exactly as
+printed:
 
 ```
 Workflow({
@@ -51,27 +45,29 @@ Workflow({
 ```
 
 The integrator writes the glue in an isolated worktree. The system reviewer
-then commits it on the run branch, runs diagnostics, and reviews the whole
-result against the spec.
+then commits it on the run branch, runs diagnostics, reviews the whole
+result against the spec, and audits every cross-module rule.
 
 ## 3. Record and report
 
-Write the result as JSON to
-`.multiagent/pipeline/runs/<runId>-integration-result.json`, and a readable
-report to `.multiagent/pipeline/runs/<runId>-integration-report.md`: the
-integration outcome, diagnostics (the full result is in the run state, see
-`CLI status --run <runId>`, and in the log file it names), the spec coverage
-table, the seam audit (`rule_checks`: one row per cross-module rule topic
-with its status and evidence), and the system reviewer's `rework_items` as a
-YAML block. A `violated` rule makes the status `rework_required` even
-without a blocking item.
+When the workflow finishes, its completion notice names an output file. Run:
 
-Tell the user the status:
+```
+CLI record --from "<that output file>"
+```
 
-- `passed`: the run branch `multiagent-runs/<runId>` is ready. Next:
-  `/module-pipeline:finish <runId>` to review and merge it. Do not merge it
-  yourself here.
-- `rework_required`, `integration_failed`, `diagnostics_failed`,
-  `review_missing`: summarize what is open; next step
-  `/module-pipeline:rework <runId>`.
-- `blocked`: the prepare errors.
+(If there is no output file, write the object the workflow returned to a
+file under `.multiagent/pipeline/runs/` and pass that.) It writes
+`<runId>-integration-result.json` and `<runId>-integration-report.md` (the
+integration outcome, diagnostics, spec coverage, the seam audit and the
+rework items) under `.multiagent/pipeline/runs/` and prints the summary.
+
+Tell the user, briefly, from that output alone: `status`, the `diagnostics`
+line, `ruleViolations` if any, the blocking `items` (one line each), where
+the report is, and the next step (`nextCommand`):
+
+- `passed`: the run branch `multiagent-runs/<runId>` is ready for
+  `/module-pipeline:finish <runId>`. Do not merge it yourself here.
+- `rework_required` (blocking items, or a violated cross-module rule even
+  without one), `integration_failed`, `diagnostics_failed`,
+  `review_missing`: `/module-pipeline:rework <runId>`.

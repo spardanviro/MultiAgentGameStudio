@@ -14,41 +14,36 @@ Manifest: `$manifest` (if empty, use `tasks/task_manifest.yaml`). Resolve it
 to an absolute path; call that MANIFEST below. CLI below means
 `node "${CLAUDE_PLUGIN_ROOT}/scripts/pipeline.mjs"`.
 
-## 1. Check before launching
+Every call you make carries the whole conversation, so keep this stage to the
+few calls below. The CLI checks the project, runs the diagnostics and writes
+the result and the report; do not repeat its work with git or file commands,
+and do not read the result files back.
 
-Run `CLI validate "MANIFEST"`. If it fails, show the errors and stop. Show
-any `warnings` (for example a module count that does not fit the project
-size) and ask whether to continue anyway.
+## 1. Prepare
 
-Then check where the session is: `git rev-parse --show-toplevel` must be the
-`projectRoot` from the validate output. Claude Code creates the agents'
-worktrees from the session's repository, so if it differs, stop and ask the
-user to move the session into the project folder. From here until the
-workflow finishes, do not `cd` anywhere else in the shell.
+Run `CLI prepare "MANIFEST"` from the project root. It validates the manifest,
+checks the session and the checkout, and returns what the workflow needs.
 
-Then check the checkout. If the current branch is the run branch
-`multiagent-runs/<runId>` (or that branch does not exist yet), run
-`git status --porcelain`; if anything outside `.multiagent/` and
-`.claude/worktrees/` is uncommitted, list it and ask the user whether to
-commit it as planning output. Only with a yes, run
-`CLI commit-planning "MANIFEST"`. Without a yes, stop: agents start from the
-run branch and would not see it. If the main checkout is on another branch,
-its uncommitted files are the user's own work; leave them alone.
+- `ok: false` with `uncommitted` files: list them and ask the user whether to
+  commit them as planning output. Only with a yes, run
+  `CLI commit-planning "MANIFEST"`, then prepare again. Without a yes, stop:
+  agents start from the run branch and would not see them.
+- Any other error (the session is not in the project, a missing prompt, an
+  incomplete rules file, a manifest error): show it and stop (status
+  `blocked`). Do not `cd` elsewhere to work around it; Claude Code creates the
+  agents' worktrees from the session's repository.
+- `warnings` (for example a module count that does not fit the project size):
+  show them and ask whether to continue anyway.
 
-## 2. Prepare and launch the workflow
+## 2. Launch the workflow
 
-Run `CLI prepare "MANIFEST"` from the project root. If `ok` is false, show
-the errors and stop (status `blocked`).
-
-Tell the user how many modules will run, in how many waves, and how many
-agents that starts with which thinking effort (from `estimate.run` in the
-validate output; every agent runs on `estimate.model`), then start the
-workflow. Mention that they may switch the main checkout to another branch
-and keep working while it runs. This command invocation is the user's
-authorization. Use the `workflowScript` path from the prepare output (prepare
-copies the script into the project, because Claude Code only runs workflow
-scripts from folders the session can read) and pass the `workflowArgs`
-object as `args`, exactly as printed:
+Tell the user in two or three lines how many modules run in how many waves,
+and how many agents that starts at which thinking effort (`estimate.run`;
+every agent runs on `estimate.model`). Mention that they may switch the main
+checkout to another branch and keep working while it runs. This command
+invocation is the user's authorization. Start the workflow with the
+`workflowScript` and `workflowArgs` from the prepare output, exactly as
+printed:
 
 ```
 Workflow({
@@ -60,56 +55,47 @@ Workflow({
 Each module runs in its own isolated worktree and may only write inside its
 own folder. Its reviewer then audits and commits it on branch
 `multiagent-runs/<run-id>` and reviews it read-only. A rerun skips modules
-that are already merged.
+that are already merged. Modules listed in `resumable` were finished by
+their implementer before an earlier invocation was interrupted; they go
+straight to their reviewer, so say so instead of counting an implementer
+for them.
 
-**Patch manifests.** When validate reports `mode: patch` (a small rework
+**Patch manifests.** When prepare reports `mode: patch` (a small rework
 written by `/module-pipeline:rework`), tell the user the patch starts 2
-agents (a patcher and a reviewer, from `estimate.run`) and its line limit,
-then start the workflow the same way: prepare's `workflowScript` is then the
-patch workflow, with its `workflowArgs`. Skip step 3: the patch reviewer already ran the diagnostics.
-In step 4 use `<runId>-patch-result.json` and `<runId>-patch-report.md`
-(items, what the patcher changed, the merge, the diagnostics, the
-reviewer's `rework_items`), and these statuses:
+agents (a patcher and a reviewer) and its line limit, then start the
+workflow the same way.
 
-- `passed`: every item resolved, diagnostics clean. Next:
-  `/module-pipeline:finish <runId>`.
-- `patch_too_large`: the patch changed more lines than its limit; nothing
-  was merged and its worktree is kept. Next: `/module-pipeline:rework <runId>`,
-  which then takes the module path.
-- `patch_failed` (with the merge status and reason), `rework_required`,
-  `diagnostics_failed`, `review_missing`: next `/module-pipeline:rework <runId>`.
+## 3. Record and report
 
-## 3. Diagnostics
+When the workflow finishes, its completion notice names an output file. Run:
 
-When the workflow returns and at least one module merged in this or an
-earlier invocation, run `CLI diagnostics --run <runId>`. Add its output to
-the result as `diagnostics`. If the workflow status is `passed` and
-diagnostics `failed` is true, change the status to `diagnostics_failed`.
+```
+CLI record --from "<that output file>"
+```
 
-## 4. Record and report
+(If there is no output file, write the object the workflow returned to a
+file under `.multiagent/pipeline/runs/` and pass that.) For the module stage
+it runs the diagnostics on the run branch; for every stage it writes
+`<runId>-<stage>-result.json` and `<runId>-<stage>-report.md` under
+`.multiagent/pipeline/runs/` and prints the summary.
 
-Write the result as JSON to
-`.multiagent/pipeline/runs/<runId>-modules-result.json`, and a readable
-report to `.multiagent/pipeline/runs/<runId>-modules-report.md` with, per
-module: status, commit, tests the implementer ran, interface requests,
-generated files that were dropped, and the reviewer's `rework_items` as a
-YAML block, plus the diagnostics (compile errors and the test result). Both
-paths are git-ignored.
+Tell the user, briefly, from that output alone:
 
-Then tell the user, briefly:
+- A table of modules with their status (for a patch: the merge status and
+  changed lines).
+- `status`, the `diagnostics` line, and the blocking `items` (id, module,
+  one line each). Say where the full report is (`reportPath`).
+- `size`, when present: the source lines built against the plan's estimate.
+- The next step: `nextCommand`. For anything other than `passed` that is
+  `/module-pipeline:rework <runId>`; do not fix module code yourself here.
 
-- A table of modules with their status.
-- `status` and what it means:
-  - `passed`: every module merged, no blocking review item, diagnostics clean.
-    Next: `/module-pipeline:integrate MANIFEST` (if the manifest has an
-    integration section), or `/module-pipeline:finish <runId>`.
-  - `rework_required`: blocking review items (list them).
-  - `modules_failed`: modules that did not merge, with the reason. A
-    `violation` lists the files written outside scope; its worktree is kept
-    for inspection. `error` means an agent did not return; `CLI status --run
-    <runId>` shows whether its module merged anyway.
-  - `diagnostics_failed`: the first compile errors, or the failing test
-    command and the tail of its output.
-  - `blocked`: the prepare errors.
-- For anything other than `passed`, the next step is
-  `/module-pipeline:rework <runId>`. Do not fix module code yourself here.
+Statuses of the module stage: `passed` (every module merged, no blocking
+review item, diagnostics clean), `rework_required` (blocking review items),
+`modules_failed` (a module did not merge: `violation` lists files written
+outside its scope and keeps its worktree; `error` means an agent did not
+return, and `CLI status --run <runId>` shows whether it merged anyway),
+`diagnostics_failed`, `blocked` (prepare errors).
+
+Statuses of a patch run: `passed`, `patch_too_large` (over its line limit,
+nothing merged, worktree kept; the next rework takes the module path),
+`patch_failed`, `rework_required`, `diagnostics_failed`, `review_missing`.

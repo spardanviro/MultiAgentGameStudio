@@ -1,7 +1,7 @@
 {
   "name": "module-pipeline",
   "displayName": "Module Pipeline",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "description": "Spec-driven multi-agent pipeline: a Main Architect splits a spec into module folders with one owner each, module agents implement them in parallel isolated worktrees under enforced write scopes, every accepted module is committed on a per-run branch, reviewers gate each stage, and rework runs close the loop.",
   "author": {
     "name": "Nero"

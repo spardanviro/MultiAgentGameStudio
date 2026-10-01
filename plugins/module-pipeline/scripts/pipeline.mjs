@@ -9,6 +9,8 @@
 //   claim --run <id> --task <id>              (inside an agent worktree) bind the worktree to a task, print the task
 //   integrate-task --run <id> --task <id>     audit a task's worktree and commit its changes on the run branch
 //   diagnostics --run <id>                    run the manifest's compile and test commands on the run branch
+//   record --from <workflow-output-file>      after a stage's workflow: run the module stage's diagnostics, write
+//                                             the result and the report, print the summary and the next step
 //   status [--run <id>]                       summarize runs
 //   clean [--run <id>] [--branches] [--into <branch>] [--dry-run]
 //                                             remove leftover worktrees, claims and merged run branches
@@ -48,6 +50,7 @@ import {
 } from './lib/git.mjs';
 import { estimateRun, findMissingPromptFiles, findTask, loadManifest, planWaves } from './lib/manifest.mjs';
 import { samePath } from './lib/paths.mjs';
+import { diagnosticsLine, openItems, reportMarkdown } from './lib/report.mjs';
 import { auditChanges } from './lib/scope.mjs';
 import {
   findGitRoot,
@@ -67,6 +70,7 @@ import {
   saveRunState,
   withLock,
   writeClaim,
+  writeJsonAtomic,
 } from './lib/state.mjs';
 
 class UsageError extends Error {}
@@ -75,6 +79,9 @@ const RUN_BRANCH_PATTERN = 'multiagent-runs/*';
 // The plugin folder, with forward slashes so it can be quoted in any shell.
 const PLUGIN_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..').replace(/\\/g, '/');
 const REWORK_SUFFIX = /(-r\d+)+$/;
+const SAFE_RUN_ID = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+// How many review items `record` prints; the report file holds all of them.
+const MAX_RECORD_ITEMS = 30;
 
 function parseArgs(argv) {
   const positional = [];
@@ -254,6 +261,30 @@ function cmdCommitPlanning({ positional }) {
   return { ok: true, committed: true, commit, files, branch: getRunBranchName(manifest.runId), createdBranch: branch.created };
 }
 
+/**
+ * True when an earlier invocation's implementer finished this module but the
+ * run stopped (a usage limit, a closed session) before its reviewer merged
+ * it: the newest claim's worktree, or its branch, holds the module report,
+ * which the implementer writes last. Such a module goes straight to its
+ * reviewer instead of being implemented again. A module whose merge was
+ * already attempted (a violation, say) is never resumed.
+ */
+function finishedUnmerged(root, state, task) {
+  if (state.tasks[task.id]) {
+    return false;
+  }
+  const [claim] = listClaims(root)
+    .filter((entry) => entry.runId === state.runId && entry.taskId === task.id)
+    .sort((a, b) => String(b.claimedAt).localeCompare(String(a.claimedAt)));
+  if (!claim) {
+    return false;
+  }
+  if (fs.existsSync(claim.worktree)) {
+    return fs.existsSync(path.join(claim.worktree, task.moduleReport));
+  }
+  return Boolean(claim.branch) && git(root, ['cat-file', '-e', `${claim.branch}:${task.moduleReport}`], { allowFail: true }) !== null;
+}
+
 function cmdPrepare({ positional, flags }) {
   const manifest = requireManifestArg(positional);
   ensureProjectRepo(manifest);
@@ -273,7 +304,8 @@ function cmdPrepare({ positional, flags }) {
     );
   }
   if (errors.length) {
-    return { ok: false, errors };
+    // `uncommitted` lets the session ask the user and run commit-planning without a git call of its own.
+    return { ok: false, errors, uncommitted, runBranch };
   }
 
   const branch = ensureRunBranchExists(root, runBranch);
@@ -296,6 +328,8 @@ function cmdPrepare({ positional, flags }) {
     model: manifest.model,
     efforts: manifest.efforts,
     warnings: manifest.warnings,
+    sizing: manifest.sizing,
+    estimate: estimateRun(manifest, new Set(merged)),
   };
   // What the stage's workflow needs, passed to it unchanged as its args. The
   // agents read everything else from the claim and merge output.
@@ -340,7 +374,9 @@ function cmdPrepare({ positional, flags }) {
     return {
       ...base,
       integration,
-      modules: manifest.tasks.map(taskInfo),
+      // The module stage's recorded gate; anything but `passed` deserves a question before integrating.
+      modulesStatus: readResult(root, manifest.runId, 'modules')?.status || null,
+      modules: manifest.tasks.map((task) => task.id),
       workflowScript: stageWorkflowScript(root, 'integrate-system.js'),
       workflowArgs: {
         ...workflowBase,
@@ -353,9 +389,11 @@ function cmdPrepare({ positional, flags }) {
   }
 
   const waves = planWaves(manifest.tasks, new Set(merged)).map((wave) => wave.map(taskInfo));
+  const resumable = new Set(manifest.tasks.filter((task) => finishedUnmerged(root, state, task)).map((task) => task.id));
   return {
     ...base,
     skipped: merged,
+    resumable: [...resumable],
     sharedLayer: manifest.sharedLayer,
     waves,
     workflowScript: stageWorkflowScript(root, 'implement-modules.js'),
@@ -363,7 +401,12 @@ function cmdPrepare({ positional, flags }) {
       ...workflowBase,
       skipped: merged,
       waves: waves.map((wave) =>
-        wave.map((task) => ({ id: task.id, dependsOn: task.dependsOn.filter((id) => !merged.includes(id)), effort: task.effort })),
+        wave.map((task) => ({
+          id: task.id,
+          dependsOn: task.dependsOn.filter((id) => !merged.includes(id)),
+          effort: task.effort,
+          ...(resumable.has(task.id) ? { resume: true } : {}),
+        })),
       ),
     },
   };
@@ -554,13 +597,17 @@ function cmdIntegrateTask({ flags }) {
   });
 }
 
-function cmdDiagnostics({ flags }) {
-  const runId = requireFlag(flags, 'run');
-  const root = projectTopLevel(process.cwd());
+function requireRunState(root, runId) {
   const state = loadRunState(root, runId);
   if (!state) {
     throw new Error(`No pipeline run ${runId} in ${root}.`);
   }
+  return state;
+}
+
+/** Runs the manifest's compile and test commands on the run branch and stores the outcome in the run state. */
+function diagnose(root, runId) {
+  const state = requireRunState(root, runId);
   const manifest = loadManifest(state.manifestPath);
   const { compileCommand, testCommand } = manifest.diagnostics;
   const checkout = compileCommand || testCommand
@@ -576,7 +623,116 @@ function cmdDiagnostics({ flags }) {
   const fresh = loadRunState(root, runId);
   fresh.diagnostics = { ...result, checkout, logPath, checkedAt: new Date().toISOString() };
   saveRunState(root, fresh);
-  return { ok: !result.failed, ...result, checkout, logPath };
+  return { ...result, checkout, logPath };
+}
+
+function cmdDiagnostics({ flags }) {
+  const result = diagnose(projectTopLevel(process.cwd()), requireFlag(flags, 'run'));
+  return { ok: !result.failed, ...result };
+}
+
+// ---- record -------------------------------------------------------------------
+
+/**
+ * The stage result inside a file: the output file of the workflow run (which
+ * wraps it in `result`), or the bare result object.
+ */
+function readStageResult(file) {
+  let parsed;
+  try {
+    const text = fs.readFileSync(file, 'utf8');
+    parsed = JSON.parse(text.slice(text.indexOf('{'), text.lastIndexOf('}') + 1));
+  } catch (error) {
+    throw new Error(`Could not read a JSON result from ${file}: ${error.message}`);
+  }
+  const result = parsed?.result?.stage ? parsed.result : parsed;
+  if (!RESULT_STAGES.includes(result?.stage) || !SAFE_RUN_ID.test(String(result.runId)) || typeof result.status !== 'string') {
+    throw new Error(
+      `${file} does not hold a stage result. Pass the output file the workflow's completion notice names, ` +
+        'or a file with the object the workflow returned (stage, runId, status, …).',
+    );
+  }
+  return result;
+}
+
+/** Source lines each module changed on the run branch, to compare with the plan's estimate. */
+function moduleSizes(root, state, manifest) {
+  const tip = branchTip(root, state.runBranch);
+  if (!manifest || !state.baseCommit || !tip) {
+    return null;
+  }
+  const perModule = manifest.tasks.map((task) => ({
+    id: task.id,
+    lines: changedLineCountBetween(root, state.baseCommit, tip, [task.ownedFolder || task.ownedScript]),
+  }));
+  return {
+    estimatedLines: manifest.project.estimatedLines,
+    builtLines: perModule.reduce((total, entry) => total + entry.lines, 0),
+    perModule,
+  };
+}
+
+const NEXT_COMMAND = {
+  integrate: (runId, manifest) => `/module-pipeline:integrate ${manifest}`,
+  finish: (runId) => `/module-pipeline:finish ${runId}`,
+  rework: (runId) => `/module-pipeline:rework ${runId}`,
+};
+
+/**
+ * Finishes a stage after its workflow returned: runs the diagnostics of the
+ * module stage, writes the result and the report beside the run state, and
+ * prints only what the session has to tell the user.
+ */
+function cmdRecord({ flags }) {
+  const result = readStageResult(path.resolve(requireFlag(flags, 'from')));
+  const { stage, runId } = result;
+  const root = projectTopLevel(process.cwd());
+  const state = requireRunState(root, runId);
+  let manifest = null;
+  try {
+    manifest = loadManifest(state.manifestPath);
+  } catch {
+    manifest = null;
+  }
+
+  if (stage === 'modules') {
+    const anyMerged = Object.values(state.tasks).some((entry) => entry.status === 'merged');
+    if (anyMerged) {
+      const { checkout, warnings, ...diagnostics } = diagnose(root, runId);
+      result.diagnostics = { ...diagnostics, warnings: (warnings || []).slice(0, 5) };
+      if (result.status === 'passed' && diagnostics.failed) {
+        result.status = 'diagnostics_failed';
+      }
+    }
+    result.size = moduleSizes(root, state, manifest);
+  }
+  const passed = result.status === 'passed';
+  result.next = !passed ? 'rework' : stage === 'modules' && manifest?.integration ? 'integrate' : 'finish';
+
+  const reportPath = path.join(pipelineDir(root), 'runs', `${runId}-${stage}-report.md`);
+  writeJsonAtomic(resultPath(root, runId, stage), result);
+  fs.writeFileSync(reportPath, reportMarkdown(result), 'utf8');
+
+  const items = openItems(result);
+  const manifestArg = path.relative(root, state.manifestPath).replace(/\\/g, '/');
+  return {
+    ok: true,
+    stage,
+    runId,
+    status: result.status,
+    next: result.next,
+    nextCommand: NEXT_COMMAND[result.next](runId, manifestArg),
+    modules: (result.modules || []).map((module) => ({ task: module.task, status: module.status, reason: module.reason || module.error || undefined })),
+    merge: stage === 'modules' ? undefined : (result.integration || result.merge || null),
+    diagnostics: diagnosticsLine(result.diagnostics),
+    items: items.slice(0, MAX_RECORD_ITEMS),
+    itemCount: items.length,
+    blockingCount: items.filter((item) => item.blocking).length,
+    ruleViolations: result.ruleViolations || undefined,
+    size: result.size || undefined,
+    resultPath: resultPath(root, runId, stage),
+    reportPath,
+  };
 }
 
 function cmdStatus({ flags }) {
@@ -785,6 +941,7 @@ const COMMANDS = {
   claim: cmdClaim,
   'integrate-task': cmdIntegrateTask,
   diagnostics: cmdDiagnostics,
+  record: cmdRecord,
   status: cmdStatus,
   clean: cmdClean,
   finish: cmdFinish,

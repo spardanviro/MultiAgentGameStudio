@@ -29,9 +29,9 @@ const IMPL_SCHEMA = {
   type: 'object',
   required: ['summary', 'testsRun', 'blockers'],
   properties: {
-    summary: { type: 'string', description: 'What was built' },
+    summary: { type: 'string', description: 'What was built, in three sentences at most; the detail belongs in the module report' },
     publicApi: { type: 'string', description: 'The public API the module exposes' },
-    testsRun: { type: 'string', description: 'Commands run and their outcome, or "none"' },
+    testsRun: { type: 'string', description: 'Each command run and its outcome on one line, or "none"' },
     testsPassed: { type: 'boolean' },
     interfaceRequests: { type: 'array', items: { type: 'string' }, description: 'Each interface request written, one line each' },
     blockers: { type: 'array', items: { type: 'string' }, description: 'Anything that stopped the work; empty if none' },
@@ -74,7 +74,7 @@ const REVIEW_SCHEMA = {
   properties: {
     merge: MERGE_SCHEMA,
     verdict: { type: 'string', enum: ['pass', 'rework', 'not_merged'] },
-    summary: { type: 'string' },
+    summary: { type: 'string', description: 'Three sentences at most; each problem goes into a rework item' },
     rework_items: { type: 'array', items: REWORK_ITEM },
   },
 }
@@ -115,6 +115,17 @@ Number issues ${task.id}-1, ${task.id}-2, and so on.`
 
 const isBlocking = (item) => item.blocks_integration === true || item.severity === 'critical'
 
+// A module marked `resume` was finished by its implementer in an earlier
+// invocation that stopped before the merge (a usage limit, a closed session).
+// Its worktree still holds the work, so it goes straight to its reviewer.
+const RESUMED = {
+  resumed: true,
+  summary: 'Resumed: the implementer finished in an earlier invocation that stopped before the merge. Its account is in the module report.',
+  testsRun: 'unknown (run the module tests yourself)',
+  interfaceRequests: [],
+  blockers: [],
+}
+
 if (!waves.length) {
   log(`Every module of ${runId} is already merged.`)
 }
@@ -132,20 +143,22 @@ for (let index = 0; index < waves.length; index += 1) {
   if (!wave.length) {
     continue
   }
-  log(`Wave ${index + 1}/${waves.length}: ${wave.map((task) => task.id).join(', ')}`)
+  log(`Wave ${index + 1}/${waves.length}: ${wave.map((task) => (task.resume ? `${task.id} (resumed, review only)` : task.id)).join(', ')}`)
 
   // The CLI serializes merges with a lock, so reviewers may merge concurrently.
   const results = await pipeline(
     wave,
     (task) =>
-      agent(implementPrompt(task), {
-        agentType: 'module-pipeline:module-implementer',
-        isolation: 'worktree',
-        schema: IMPL_SCHEMA,
-        label: `implement:${task.id}`,
-        phase: 'Implement',
-        ...agentOptions(task.effort),
-      }),
+      task.resume
+        ? RESUMED
+        : agent(implementPrompt(task), {
+            agentType: 'module-pipeline:module-implementer',
+            isolation: 'worktree',
+            schema: IMPL_SCHEMA,
+            label: `implement:${task.id}`,
+            phase: 'Implement',
+            ...agentOptions(task.effort),
+          }),
     (impl, task) =>
       agent(reviewPrompt(task, impl), {
         agentType: 'module-pipeline:module-reviewer',
@@ -172,6 +185,7 @@ for (let index = 0; index < waves.length; index += 1) {
     outcomes.push({
       task: task.id,
       status: merge.status,
+      resumed: Boolean(impl && impl.resumed),
       commit: merge.commit || null,
       files: merge.files || [],
       violations: merge.violations || [],

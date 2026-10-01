@@ -39,16 +39,25 @@ glue. Keep your own reading of the existing code to what planning needs.
 
    | Estimated source lines | Modules |
    | --- | --- |
-   | under 1,500 | 1-3 (and tell the user one session is likely cheaper than the pipeline) |
-   | 1,500-5,000 | 2-6 |
-   | 5,000-15,000 | 4-12 |
+   | under 2,000 | 1-2 (and tell the user one session is cheaper than the pipeline at this size) |
+   | 2,000-6,000 | 2-4 |
+   | 6,000-15,000 | 4-10 |
    | over 15,000 | 8-20; if it needs more, split the spec into several runs |
 
-   Every module is a full agent session plus a review, and each one pays a
-   fixed start-up cost, so too many small modules waste tokens; too few make
-   one agent hold a whole subsystem. Aim for roughly 400-1,500 source lines
-   per module. Record the estimate as `project.estimated_lines`; validate
-   warns when the count falls outside the band.
+   Every module costs an implementer and a reviewer session, usually a share
+   of a rework round, and one more seam where modules can disagree. Too few
+   make one agent hold a whole subsystem. Aim for roughly 700-2,000 source
+   lines per module.
+
+   Estimate low. Plans overestimate: agents write compact code, and a spec
+   reads bigger than it builds (the first benchmark's plan said 3,200 lines;
+   the finished game had 1,700, in seven modules of about 250 lines each,
+   and cost twice what a single session spent on the same spec). List the
+   features, give each the lines a tight implementation needs, add nothing
+   for abstractions the spec does not ask for, and when the total sits
+   between two bands, take the lower one. Record the estimate as
+   `project.estimated_lines`; validate warns when the count falls outside
+   the band, and each stage's report shows the lines actually built.
 3. **Design the shared layer.** With two or more modules, one module builds
    the shared layer first and every other module depends on it. It holds
    what more than one module needs: the code behind the cross-module rules
@@ -133,20 +142,23 @@ glue. Keep your own reading of the existing code to what planning needs.
      run tests, what never to do. The implementer, reviewer and integrator
      agents start without any CLAUDE.md file, to keep each agent's start-up
      cost low, so copy in every rule from the project's CLAUDE.md files that
-     matters for this code, and nothing else. Keep it short.
+     matters for this code, and nothing else. Keep it short. Give it a
+     `## Tests` section with the rules in
+     `${CLAUDE_SKILL_DIR}/test-rules.md`, adapted to the project's test
+     framework; reviewers hold modules to them.
    - Keep every tuning value in one data module and have the other modules
-     read it from there, including for presentation. In the contracts, ask
-     that tests of behavior take their numbers from the data module; only
-     the data module's own tests pin the spec values. Otherwise one balance
-     change forces a rework of every module whose tests restate the number.
+     read it from there, including for presentation. Store each value once:
+     a second field that must always equal the first (a "first spawn time"
+     next to the spawn interval) is a copy waiting to drift; derive it.
    - If the spec is outside the repository, copy it to `docs/spec.md`; agents
      work in worktrees and only see files committed in the repo.
 7. **Scaffold** every module folder, test folder and support folder with
    stub files for the public API: signatures, types, TODO markers naming the
    acceptance criteria. No real logic.
 8. **Write one prompt per module** at `work/prompts/<task-id>.md`: the
-   feature, the owned folder and existing stubs, the relevant contract section
-   (quoted, not just referenced), the modules it depends on and their APIs,
+   feature, the owned folder and existing stubs, the headings of the contract
+   sections it must meet (name them; the agent reads docs/module_contracts.md
+   itself, so do not copy the text), the modules it depends on,
    the acceptance criteria, the shared-layer helpers and fixtures it should
    use, the cross-module rules that touch this module (which state it owns
    and for how long, which shared exports it must call), and how to run its

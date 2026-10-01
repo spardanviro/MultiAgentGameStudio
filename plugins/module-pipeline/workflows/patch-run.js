@@ -28,8 +28,8 @@ const PATCH_SCHEMA = {
   type: 'object',
   required: ['summary', 'testsRun', 'blockers'],
   properties: {
-    summary: { type: 'string', description: 'What was changed for each item' },
-    testsRun: { type: 'string', description: 'Commands run and their outcome, or "none"' },
+    summary: { type: 'string', description: 'What was changed for each item, one line per item; the detail belongs in the patch report' },
+    testsRun: { type: 'string', description: 'Each command run and its outcome on one line, or "none"' },
     testsPassed: { type: 'boolean' },
     blockers: { type: 'array', items: { type: 'string' }, description: 'Items that could not be fixed as a patch, and why; empty if none' },
   },
@@ -63,7 +63,7 @@ const REVIEW_SCHEMA = {
       },
     },
     verdict: { type: 'string', enum: ['pass', 'rework', 'not_merged'] },
-    summary: { type: 'string' },
+    summary: { type: 'string', description: 'Three sentences at most; each problem goes into a rework item' },
     rework_items: {
       type: 'array',
       items: {

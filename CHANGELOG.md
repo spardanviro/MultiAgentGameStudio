@@ -3,6 +3,49 @@
 All notable changes to the module-pipeline plugin. Versions follow
 `plugins/module-pipeline/.claude-plugin/plugin.json`.
 
+## 0.8.0 - 2026-10-01
+
+Less waste, from measuring where the benchmark run spent its tokens and time:
+the main session cost more than a whole single-session build (101 calls, each
+carrying the full conversation), the plan overestimated the project by almost
+two times and split it into seven small modules, a usage-limit interruption
+made five finished modules be built again, and tests restating the spec made
+a four-number change cost up to 80 test lines.
+
+### Added
+
+- `record --from <workflow output file>`: finishes a stage in one call. It
+  runs the module stage's diagnostics, writes `<run>-<stage>-result.json` and
+  `<run>-<stage>-report.md`, and prints the status, the blocking items, the
+  diagnostics line and the next command. The report holds every review item,
+  the spec coverage, the seam audit and the source lines each module built
+  against the plan's estimate. The session no longer writes these by hand.
+- `prepare` is the only check a stage needs: it returns the uncommitted
+  files to ask about, the warnings, `sizing` and `estimate`, and for the
+  integration stage `modulesStatus`.
+- Resume after an interruption: `prepare` lists as `resumable` the modules
+  whose implementer had written its report but whose merge never ran, and
+  the workflow sends them straight to their reviewer. A module whose merge
+  was already refused is rebuilt instead.
+- `skills/plan/test-rules.md`: test rules the plan copies into
+  `docs/conventions.md` (numbers from the data module, assert only what the
+  test is about, fixtures call production code, one rule in one place, no
+  dependence on balance or a lucky seed). Module reviewers check them.
+
+### Changed
+
+- Module sizing: about 700-2,000 source lines per module. The bands are now
+  under 2,000 lines: 1-2 modules, 2,000-6,000: 2-4, 6,000-15,000: 4-10,
+  above: 8-20. The plan skill tells the architect to estimate low and why.
+- `/module-pipeline:run` and `/module-pipeline:integrate` are three steps:
+  prepare, workflow, record.
+- `/module-pipeline:rework` reads the stage reports instead of the result
+  JSON.
+- Module prompts name the contract sections instead of copying them, and
+  the plan stores each tuning value once.
+- Agents keep the summaries in their structured result to a few sentences;
+  the detail stays in the reports they write to files.
+
 ## 0.7.0 - 2026-10-01
 
 Cross-module rules, from the phase-1 benchmark: the plugin's build passed

@@ -131,9 +131,9 @@ the shared layer, falls outside this band:
 
 | Estimated source lines | Modules |
 | --- | --- |
-| under 1,500 | 1-3 (one session is usually cheaper than the pipeline) |
-| 1,500-5,000 | 2-6 |
-| 5,000-15,000 | 4-12 |
+| under 2,000 | 1-2 (one session is cheaper than the pipeline at this size) |
+| 2,000-6,000 | 2-4 |
+| 6,000-15,000 | 4-10 |
 | 15,000 and more | 8-20 |
 
 ## Patch runs

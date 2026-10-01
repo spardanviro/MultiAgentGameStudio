@@ -64,13 +64,15 @@ export const PRESETS = {
 };
 
 // How many modules (not counting the shared layer) suit a project of a given
-// size. Each module is a full agent session plus a review, so too many small
-// modules pay that fixed cost over and over, and too few make one agent hold
-// a whole subsystem.
+// size: about 700-2,000 source lines each. A module costs an implementer and a
+// reviewer session, and usually a share of a rework round; in the first
+// benchmark seven modules of about 250 lines each cost twice what one session
+// spent on the whole project. Every extra module is also one more seam. Too
+// few modules make one agent hold a whole subsystem.
 export const SIZE_BANDS = [
-  { below: 1500, modules: [1, 3] },
-  { below: 5000, modules: [2, 6] },
-  { below: 15000, modules: [4, 12] },
+  { below: 2000, modules: [1, 2] },
+  { below: 6000, modules: [2, 4] },
+  { below: 15000, modules: [4, 10] },
   { below: Infinity, modules: [8, 20] },
 ];
 
@@ -396,8 +398,8 @@ export function sizeModules(estimatedLines, moduleCount) {
   const warnings = [];
   if (moduleCount > max) {
     warnings.push(
-      `${moduleCount} modules for about ${estimatedLines} lines is too fine: each module is a full agent session plus a review. ` +
-        `Merge them into ${min}-${max} modules.`,
+      `${moduleCount} modules for about ${estimatedLines} lines is too fine (about ${sizing.linesPerModule} lines each): every module costs an ` +
+        `implementer and a reviewer session and adds a seam. Merge them into ${min}-${max} modules.`,
     );
   } else if (moduleCount < min) {
     warnings.push(
@@ -406,7 +408,10 @@ export function sizeModules(estimatedLines, moduleCount) {
     );
   }
   if (estimatedLines < SIZE_BANDS[0].below) {
-    warnings.push('A project this small is usually cheaper to build in one session than through the pipeline.');
+    warnings.push(
+      'A project this small is cheaper to build in one session than through the pipeline, which cost about twice as much ' +
+        'on a 1,700-line benchmark.',
+    );
   }
   return { sizing, warnings };
 }

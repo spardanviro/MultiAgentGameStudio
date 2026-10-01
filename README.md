@@ -112,6 +112,13 @@ codebase that splits cleanly into modules.
   single agent fixes them all and a single reviewer checks them, instead of
   the whole module and integration path.
 - **Resumes.** Merged modules are recorded, so a rerun only does what is left.
+  A module whose implementer had finished when a run was interrupted (a usage
+  limit, a closed session) is not built again: the rerun sends it straight to
+  its reviewer.
+- **Keeps your session thin.** Every call in your session carries the whole
+  conversation, so the CLI does the bookkeeping: one `prepare` call checks
+  everything before a stage, and one `record` call after it runs the
+  diagnostics, writes the result and the report, and prints the summary.
 - **Leaves your checkout free.** You can switch the main checkout to another
   branch and keep working while a run is in progress.
 - **Runs every agent on the strongest model.** All roles use Opus (always the
@@ -237,7 +244,7 @@ example:
 | hud | `src/hud/` | shared, player | 3 |
 
 It also checks the module count against the estimated size ("about 3,000
-lines: 2-6 modules recommended, 3 planned") and tells you what the run will
+lines: 2-4 modules recommended, 3 planned") and tells you what the run will
 cost in agents, for example "all on Opus; `run`: 4 implementers (medium),
 4 reviewers (medium); `integrate`: integrator (medium), system reviewer
 (high)". You
@@ -300,7 +307,7 @@ Your session becomes the Main Architect. The run id defaults to `run-001`, or to
 the next free `run-NNN`.
 
 - Estimates the project's source lines and picks the module count from that
-  (for example 2-6 modules for 1,500-5,000 lines): every module is a full agent
+  (for example 2-4 modules for 2,000-6,000 lines, about 700-2,000 lines each): every module is a full agent
   session plus a review, so many tiny modules waste tokens.
 - Designs the shared layer: helpers, constants, theme values and test fixtures
   that more than one module needs. One module builds it first; the others
@@ -328,7 +335,7 @@ the next free `run-NNN`.
 - Copies the spec into `docs/spec.md` if it lives outside the repo. Agents only
   see committed files.
 - Scaffolds stubs, writes one self-contained prompt per module (with the
-  contract section quoted in it), and writes the manifest.
+  contract sections named in it), and writes the manifest.
 - Fills in the build and test commands, the files the engine generates, and
   an effort preset.
 - Validates the manifest and fixes it until it passes.
@@ -369,10 +376,12 @@ The default manifest is `tasks/task_manifest.yaml`.
      sidestepped rule blocks integration.
 
    Modules that depend on a module that failed to merge are skipped.
-3. Runs diagnostics on the run branch: `compile_command` first, then
-   `test_command` (skipped if the build failed).
-4. Saves the result JSON and a readable report under `.multiagent/pipeline/runs/`
-   and shows you the gate status.
+3. Runs `record` on the workflow's output: it runs the diagnostics on the run
+   branch (`compile_command` first, then `test_command`, skipped if the build
+   failed), saves the result JSON and a readable report under
+   `.multiagent/pipeline/runs/`, and compares the source lines built with
+   the plan's estimate.
+4. Shows you the gate status, the blocking items and the next command.
 
 ### `/module-pipeline:integrate [manifest]`
 
@@ -552,9 +561,9 @@ shared layer) does not fit `project.estimated_lines`:
 
 | Estimated source lines | Modules |
 | --- | --- |
-| under 1,500 | 1-3 (one session is usually cheaper than the pipeline) |
-| 1,500-5,000 | 2-6 |
-| 5,000-15,000 | 4-12 |
+| under 2,000 | 1-2 (one session is cheaper than the pipeline at this size) |
+| 2,000-6,000 | 2-4 |
+| 6,000-15,000 | 4-10 |
 | 15,000 and more | 8-20 |
 
 A module can always write its owned folder, its test folder,
@@ -701,6 +710,20 @@ requests), see
   modules.
 - **Depend only on real API use.** Every `depends_on` edge adds a wave and takes
   away parallelism.
+- **Estimate low and keep modules large.** Plans overestimate. In the
+  benchmark a plan of 3,200 lines came out at 1,700, in seven modules of
+  about 250 lines; that cost twice what one session spent on the same spec.
+  Aim for 700-2,000 source lines per module, and below about 2,000 lines in
+  total use a single session instead of the pipeline.
+- **Keep tests cheap to change.** The plan puts test rules into
+  `docs/conventions.md`: expected numbers come from the data module, tests
+  assert the fields they are about, fixtures call production code, and one
+  rule is tested in one place. Otherwise a four-number balance change costs
+  dozens of test edits.
+- **Start a new session when the conversation is long.** Every stage reads
+  its state from disk, so `/clear` or a new session loses nothing. Each call
+  resends the conversation; past a few hundred thousand tokens of context a
+  fresh start is cheaper.
 - **Tighten the contracts before running.** Most rework comes from vague public
   APIs. Reading `docs/module_contracts.md` before you approve the plan pays off.
 - **Spend thinking where it matters.** Start from a preset, then raise the
@@ -777,9 +800,9 @@ plugins/module-pipeline/
   workflows/                           implement-modules.js, integrate-system.js, patch-run.js
   hooks/hooks.json                     PreToolUse scope guard, PostToolUse shell check
   scripts/pipeline.mjs                 CLI: validate, commit-planning, prepare, claim,
-                                       integrate-task, diagnostics, status, clean, finish
+                                       integrate-task, diagnostics, record, status, clean, finish
   scripts/scope-hook.mjs               both hooks
-  scripts/lib/                         manifest, scope, git, state, diagnostics
+  scripts/lib/                         manifest, scope, git, state, diagnostics, report
   test/                                node:test suites and a workflow harness
 ```
 

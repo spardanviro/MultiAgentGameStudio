@@ -28,9 +28,9 @@ const IMPL_SCHEMA = {
   type: 'object',
   required: ['summary', 'testsRun', 'blockers'],
   properties: {
-    summary: { type: 'string' },
+    summary: { type: 'string', description: 'What was wired, in five sentences at most; the detail belongs in the integration report' },
     executionOrder: { type: 'string', description: 'How the modules are started and in which order' },
-    testsRun: { type: 'string', description: 'Commands run and their outcome, or "none"' },
+    testsRun: { type: 'string', description: 'Each command run and its outcome on one line, or "none"' },
     testsPassed: { type: 'boolean' },
     interfaceRequests: { type: 'array', items: { type: 'string' } },
     blockers: { type: 'array', items: { type: 'string' } },
@@ -98,7 +98,7 @@ const SYSTEM_REVIEW_SCHEMA = {
     merge: MERGE_SCHEMA,
     diagnostics: DIAGNOSTICS_SCHEMA,
     verdict: { type: 'string', enum: ['pass', 'rework', 'not_merged'] },
-    summary: { type: 'string' },
+    summary: { type: 'string', description: 'Five sentences at most; each problem goes into a rework item' },
     spec_coverage: {
       type: 'array',
       items: {

@@ -139,10 +139,12 @@ its own.
 - **`node <plugin>/scripts/pipeline.mjs <command>`**, the pipeline CLI. The
   skills run it from your session; inside the workflows the implementers and
   the integrator run `claim`, the module reviewers run `integrate-task`, and
-  the system reviewer runs `integrate-task` and `diagnostics`. Its only child
+  the system reviewer runs `integrate-task` and `diagnostics`. After a
+  stage your session runs `record`, which runs the module stage's
+  diagnostics and writes the result and the report. Its only child
   processes are `git` (below) and the two commands you put in the manifest.
 - **`git`** in the project, for these subcommands: `status`, `diff`, `log`,
-  `ls-files`, `rev-parse`, `rev-list`, `merge-base`, `config` (reading your
+  `ls-files`, `cat-file`, `rev-parse`, `rev-list`, `merge-base`, `config` (reading your
   identity only), `switch -c` (creating the run branch), `add`, `commit`,
   `apply` (applying a module's audited patch), `update-ref` (moving the run
   branch), `branch` (listing; deleting agent branches and, in `clean`, run

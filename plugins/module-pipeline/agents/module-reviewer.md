@@ -32,8 +32,9 @@ report is the implementer's claim, not evidence.
   assumed. A question the rules leave open and the module answered alone
   counts too.
 - Project rules in docs/conventions.md, if it exists.
-- Tests exist, test behavior rather than restate the code or pin a
-  workaround, and pass.
+- Tests exist, pass, and test behavior: they do not restate the code or
+  the spec's numbers, pin a workaround, or copy production logic into a
+  fixture.
 - Correctness: unhandled errors, wrong state transitions, dead code, values
   hardcoded that belong in the data module.
 

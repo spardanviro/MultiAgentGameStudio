@@ -100,13 +100,14 @@ test('validate compares the module count with the estimated project size', () =>
   const sized = (lines) => parse(DEFAULT_MANIFEST.replace('  spec: docs/spec.md\n', `  spec: docs/spec.md\n  estimated_lines: ${lines}\n`));
 
   const fits = sized(3000);
-  assert.deepEqual(fits.sizing, { estimatedLines: 3000, modules: 3, recommended: { min: 2, max: 6 }, linesPerModule: 1000 });
+  assert.deepEqual(fits.sizing, { estimatedLines: 3000, modules: 3, recommended: { min: 2, max: 4 }, linesPerModule: 1000 });
   assert.deepEqual(fits.warnings, []);
 
   assert.match(sized(40000).warnings[0], /3 modules for about 40000 lines is too coarse.*Split them into 8-20 modules/);
-  const tiny = sized(800).warnings;
-  assert.equal(tiny.length, 1, 'three modules fit the smallest band');
-  assert.match(tiny[0], /usually cheaper to build in one session/);
+  const tiny = sized(1800).warnings;
+  assert.equal(tiny.length, 2);
+  assert.match(tiny[0], /3 modules for about 1800 lines is too fine \(about 600 lines each\).*Merge them into 1-2 modules/);
+  assert.match(tiny[1], /cheaper to build in one session.*about twice as much/);
 
   const shared = parse(SHARED_TASK_MANIFEST.replace('  spec: docs/spec.md\n', '  spec: docs/spec.md\n  estimated_lines: 3000\n'));
   assert.equal(shared.sizing.modules, 3, 'the shared layer does not count as a module');
@@ -122,7 +123,7 @@ test('too many modules for the size is a warning, not an error', () => {
   const manifest = parse(
     `version: 1\nproject:\n  name: Tiny\n  estimated_lines: 2000\nrun:\n  id: run-001\nshared_layer:\n  existing: [src/common/]\n  rules: docs/cross_module_rules.md\ntasks:\n${many}`,
   );
-  assert.match(manifest.warnings[0], /7 modules for about 2000 lines is too fine.*Merge them into 2-6 modules/);
+  assert.match(manifest.warnings[0], /7 modules for about 2000 lines is too fine.*Merge them into 2-4 modules/);
 });
 
 test('an existing shared-layer folder must exist', () => {

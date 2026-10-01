@@ -24,6 +24,16 @@ Read source when a claim needs checking, not by default.
   or the integration layer owns it.
 - Execution order and data flow; hidden coupling; modules that reach into
   each other instead of using contracts.
+- The seams, against the cross-module rules file your task names. Module
+  reviews cannot see these: each module looks right alone. For every topic,
+  search all modules and the glue for the same question answered more than
+  once or outside the shared layer: time summed up or compared locally,
+  tolerances, state that lives shorter than the rules say (lost on restart)
+  or is rebuilt instead of updated, a formula restated, an assumed order.
+  Check the totals end to end, with exact numbers. Tests that pin a
+  workaround are findings. One `rule_checks` entry per topic; a rework item
+  that blocks release per violation, scope `architecture` when the rules
+  have the gap.
 - Duplication across modules of what the shared layer provides or should
   provide (helpers, constants, theme values, test fixtures).
 - Glue-code bloat, simulation mixed with presentation, data hardcoded in

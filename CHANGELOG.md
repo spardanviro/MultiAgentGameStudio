@@ -3,6 +3,54 @@
 All notable changes to the module-pipeline plugin. Versions follow
 `plugins/module-pipeline/.claude-plugin/plugin.json`.
 
+## 0.7.0 - 2026-10-01
+
+Cross-module rules, from the phase-1 benchmark: the plugin's build passed
+every acceptance test but had the most defects in blind review, nearly all of
+them between modules (a debug switch reset by a new game, time summed to
+599.9999 so the result screen showed 09:59, weapon state rebuilt on upgrade).
+Each module looked right alone. The shared layer held helpers, but nobody had
+decided how time is counted or where state lives.
+
+### Added
+
+- `shared_layer.rules`: the cross-module rules file, required with two or more
+  modules. It must have the headings `Time`, `State`, `Numbers`, `Order` and
+  `Errors`, each with text under it; `validate` and `prepare` report a missing
+  file, heading or empty topic. HTML comments do not count as text.
+- `skills/plan/cross-module-rules.md`: the template, with what to settle
+  under each heading. It fails validation until it is filled in.
+- `/module-pipeline:plan` has a new step that writes the rules. Each rule has
+  a decision with exact values, the shared-layer export that carries it out,
+  what modules must not do instead, and an exact-number check (a shared-layer
+  test and a line in `integration.acceptance`). The architect lists the rules
+  it decided itself before the plan is committed.
+- The system reviewer returns `rule_checks`, one entry per topic
+  (`followed`, `violated`, `not_applicable`, with evidence). A violated rule
+  makes the integration result `rework_required`, and the result carries
+  `ruleViolations`.
+
+### Changed
+
+- The shared layer now holds the code behind the rules (clock, number
+  comparison, state containers, shared formulas), not only helpers.
+- Claim and merge output, and the workflow args, carry `rules`; every agent
+  prompt names the file.
+- Implementers and the patcher may not settle a cross-module question locally
+  (own tolerance, own running total, private copy of state, rebuilding state
+  the rules say to update) or pin a workaround in a test. Module reviewers
+  check the rules topic by topic and block a module that sidesteps one. The
+  integrator keeps state where the rules put it.
+- `/module-pipeline:rework` looks for seam defects first and fixes them at the
+  cause on the module path: rule, then shared layer, then the modules that
+  worked around it. A seam defect never goes to a patch run. A project
+  planned before 0.7.0 gets its rules file written at its next rework.
+
+### Upgrading
+
+A manifest with two or more modules and no `shared_layer.rules` is now
+rejected. Write the rules file from the template and add the field.
+
 ## 0.6.1 - 2026-09-30
 
 ### Fixed

@@ -27,7 +27,10 @@ criteria (one per item), and the line limit.
 - Keep every public API in docs/module_contracts.md as it is. If an item can
   only be fixed by changing a contract or adding a module, it is not a
   patch: stop, explain it in your interface request file and in `blockers`.
-- Use the shared layer instead of adding local copies of its helpers.
+- Use the shared layer instead of adding local copies of its helpers, and
+  follow the cross-module rules file (`rules` in the claim output). An item
+  that needs a rule changed, or the same workaround in several modules, is
+  not a patch: stop and report it the same way.
 - Update the tests the fixes affect, then run the whole test suite. Never
   claim tests passed without running them.
 

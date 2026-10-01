@@ -59,6 +59,11 @@ A Claude Code plugin that runs a spec-driven, multi-agent build:
   shared layer: helpers, constants, theme values and test fixtures that more
   than one module needs. Its module is built first and every other module
   depends on it, so agents import it instead of each writing their own copy.
+- **Cross-module rules.** `shared_layer.rules` names the file that settles
+  what every module must do the same way: how time advances, where state
+  lives and what resets it, numbers, order, errors. The shared layer holds
+  the code behind each rule, module reviewers block a module that sidesteps
+  one, and the system reviewer checks every rule across all modules.
 - **Module count fits the project size.** `project.estimated_lines` lets
   validate warn when a run has too many small modules (each one costs a full
   agent session and a review) or too few large ones.

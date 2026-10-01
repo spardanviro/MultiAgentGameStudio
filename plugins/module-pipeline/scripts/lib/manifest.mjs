@@ -5,7 +5,7 @@
 //   project: { name, root?, spec?, estimated_lines? }
 //   run: { id, goal? }
 //   effort: { preset?, module_implementer?, module_reviewer?, integrator?, system_reviewer? }
-//   shared_layer: { task?, existing? }   # required with two or more modules
+//   shared_layer: { task?, existing?, rules? }   # required with two or more modules; rules is the cross-module rules file
 //   diagnostics: { compile_command?, test_command?: string | string[], timeout_ms? }
 //   generated_files: ["*.uid", ".godot/"]   # tool output dropped (not rejected) when outside a task's scope
 //   tasks:            # module tasks, one owned folder each
@@ -72,6 +72,17 @@ export const SIZE_BANDS = [
   { below: 5000, modules: [2, 6] },
   { below: 15000, modules: [4, 12] },
   { below: Infinity, modules: [8, 20] },
+];
+
+// Topics the cross-module rules file must settle, one heading each. Module
+// agents see contracts, not each other's code, so whatever these leave open is
+// solved again in every module, each time differently.
+export const RULE_TOPICS = [
+  { heading: 'Time', covers: 'how time advances, who advances it and how it is compared' },
+  { heading: 'State', covers: 'where shared or long-lived state lives, how long it lives and what resets it' },
+  { heading: 'Numbers', covers: 'units, rounding, comparing floats and the one home of each shared formula' },
+  { heading: 'Order', covers: 'the order of work within one step or request and when readers observe it' },
+  { heading: 'Errors', covers: 'how invalid input and failures cross module boundaries' },
 ];
 
 function effortLevel(value, fieldName) {
@@ -307,11 +318,13 @@ export function validateOwnership(tasks, integration) {
 
 /**
  * The shared layer holds what several modules need: cross-cutting helpers,
- * constants, theme values and test fixtures. Without one, every module agent
- * writes its own copy. A run with two or more modules must name it: the module
- * that builds it in this run (`task`: it runs first and every other module
- * depends on it), or the folders that already hold it (`existing`, for rework
- * runs and existing code bases).
+ * constants, theme values and test fixtures, and the code behind the
+ * cross-module rules (`rules`: the file that settles how time advances, where
+ * shared state lives and the other topics in RULE_TOPICS). Without one, every
+ * module agent writes its own copy and its own answer. A run with two or more
+ * modules must name it: the module that builds it in this run (`task`: it runs
+ * first and every other module depends on it), or the folders that already
+ * hold it (`existing`, for rework runs and existing code bases).
  * @returns {{sharedLayer: object|null, tasks: object[]}} tasks with the shared dependency added
  */
 function resolveSharedLayer(raw, tasks) {
@@ -327,7 +340,7 @@ function resolveSharedLayer(raw, tasks) {
     return { sharedLayer: null, tasks };
   }
   if (typeof section !== 'object' || Array.isArray(section)) {
-    throw new Error('shared_layer must be a mapping with task and/or existing.');
+    throw new Error('shared_layer must be a mapping with task and/or existing, and rules.');
   }
   const taskId = section.task != null ? safeId(section.task, 'shared_layer.task') : null;
   const existing = uniqueScopes(asStringList(section.existing), 'shared_layer.existing entry');
@@ -342,6 +355,13 @@ function resolveSharedLayer(raw, tasks) {
     throw new Error(`${taskId} builds the shared layer, so it runs first and cannot depend on other modules.`);
   }
   tasks.filter((task) => task.supportFolder && task.id !== taskId).forEach(rejectSupportFolder);
+  const rules = optionalPath(section.rules, 'shared_layer.rules');
+  if (!rules && tasks.length >= 2) {
+    throw new Error(
+      'shared_layer.rules is required when a run has two or more modules: the file with the cross-module rules ' +
+        `(${RULE_TOPICS.map((topic) => topic.heading.toLowerCase()).join(', ')}), for example docs/cross_module_rules.md. See manifest-schema.md.`,
+    );
+  }
   const paths = owner
     ? [owner.ownedFolder || owner.ownedScript, owner.supportFolder, ...existing].filter(Boolean)
     : existing;
@@ -350,7 +370,7 @@ function resolveSharedLayer(raw, tasks) {
       ? task
       : { ...task, dependsOn: [taskId, ...task.dependsOn] },
   );
-  return { sharedLayer: { taskId, paths }, tasks: withShared };
+  return { sharedLayer: { taskId, paths, rules }, tasks: withShared };
 }
 
 function rejectSupportFolder(task) {
@@ -455,6 +475,7 @@ export function validateManifest(raw, manifestPath) {
       throw new Error('A patch run has only the patch section: no tasks and no integration.');
     }
     const existing = raw.shared_layer?.existing ? uniqueScopes(asStringList(raw.shared_layer.existing), 'shared_layer.existing entry') : [];
+    const rules = optionalPath(raw.shared_layer?.rules, 'shared_layer.rules');
     return {
       ...common,
       project: {
@@ -463,7 +484,7 @@ export function validateManifest(raw, manifestPath) {
         estimatedLines: null,
       },
       generatedFiles: normalizeGenerated(raw),
-      sharedLayer: existing.length ? { taskId: null, paths: existing } : null,
+      sharedLayer: existing.length || rules ? { taskId: null, paths: existing, rules } : null,
       sizing: null,
       warnings: effortWarnings,
       tasks: [],
@@ -565,7 +586,32 @@ export function loadManifest(manifestPath) {
   return validateManifest(raw, absolute);
 }
 
-/** Prompt files and existing shared-layer folders that are missing (reported by validate/prepare). */
+/**
+ * What a cross-module rules file still lacks: every topic in RULE_TOPICS needs
+ * its own heading with text under it. HTML comments do not count as text, so
+ * the plan skill's template fails until it is filled in. A topic that does
+ * not apply to the project says so under its heading.
+ * @param {string} text the file's content
+ * @returns {string[]} one line per problem
+ */
+export function checkRulesFile(text) {
+  const lines = String(text).replace(/<!--[\s\S]*?-->/g, '').split(/\r?\n/);
+  const headings = lines
+    .map((line, index) => ({ index, match: line.match(/^(#{1,6})\s+(?:\d+[.)]\s*)?(.*)$/) }))
+    .filter((entry) => entry.match)
+    .map((entry) => ({ index: entry.index, level: entry.match[1].length, title: entry.match[2].trim() }));
+  return RULE_TOPICS.flatMap((topic) => {
+    const at = headings.findIndex((heading) => new RegExp(`^${topic.heading}\\b`, 'i').test(heading.title));
+    if (at < 0) {
+      return [`has no "${topic.heading}" heading (${topic.covers})`];
+    }
+    const next = headings.slice(at + 1).find((heading) => heading.level <= headings[at].level);
+    const body = lines.slice(headings[at].index + 1, next ? next.index : lines.length);
+    return body.some((line) => line.trim()) ? [] : [`says nothing under "${topic.heading}" (${topic.covers}); write the rule, or "Not applicable" and why`];
+  });
+}
+
+/** Missing prompt files and shared-layer folders, and gaps in the cross-module rules file (reported by validate/prepare). */
 export function findMissingPromptFiles(manifest) {
   const prompts = [...manifest.tasks, manifest.integration, manifest.patch]
     .filter(Boolean)
@@ -575,7 +621,19 @@ export function findMissingPromptFiles(manifest) {
   const shared = existing
     .filter((entry) => !fs.existsSync(path.join(manifest.projectRoot, entry)))
     .map((entry) => `shared_layer.existing does not exist: ${entry}`);
-  return [...prompts, ...shared];
+  return [...prompts, ...shared, ...rulesProblems(manifest)];
+}
+
+function rulesProblems(manifest) {
+  const rules = manifest.sharedLayer?.rules;
+  if (!rules) {
+    return [];
+  }
+  const file = path.join(manifest.projectRoot, rules);
+  if (!fs.existsSync(file)) {
+    return [`shared_layer.rules does not exist: ${rules}`];
+  }
+  return checkRulesFile(fs.readFileSync(file, 'utf8')).map((problem) => `shared_layer.rules (${rules}) ${problem}`);
 }
 
 export function findTask(manifest, taskId) {

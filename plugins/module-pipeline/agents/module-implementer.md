@@ -27,6 +27,15 @@ paths, dependencies, acceptance criteria, and the shared-layer folders.
 - Use the shared layer for helpers, constants, theme values and test
   fixtures. Never write your own copy of something it has. If it lacks
   something you need, write an interface request and keep a local seam.
+- The cross-module rules file (`rules` in the claim output) settles what
+  every module must do the same way: how time advances and is compared,
+  where shared state lives and what resets it, units and rounding, the order
+  of work, error handling. Call the shared-layer function each rule names.
+  Never settle such a question inside your module: no tolerance of your
+  own, no value summed up yourself that the shared layer tracks, no private
+  copy of state another module owns, no rebuilding of state the rules say
+  to update. Your tests must not pin a workaround either. If the rules leave
+  a case open, write an interface request and say so in your report.
 - Anything else outside your scope (another module's API, a new dependency):
   describe it in your interface request file and continue with a clean seam.
 - Keep the public API in docs/module_contracts.md. If the contract looks

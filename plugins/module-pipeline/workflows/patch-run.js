@@ -20,6 +20,9 @@ const CLI = `node "${pluginRoot}/scripts/pipeline.mjs"`
 const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max']
 // Every agent runs on the strongest model; roles differ only in thinking effort.
 const model = args.model || 'opus'
+// The cross-module rules file (shared_layer.rules), when the run has one.
+const rules = typeof args.rules === 'string' ? args.rules : null
+const rulesRead = rules ? `, ${rules} (the cross-module rules)` : ''
 
 const PATCH_SCHEMA = {
   type: 'object',
@@ -101,7 +104,7 @@ Run goal: ${goal || '(see the rework decisions)'}
 1. Claim your worktree first:
    ${CLI} claim --run ${runId} --task patch
    It prints your task as JSON: the prompt file with every rework item, the files you may change, report and interface request paths, one acceptance criterion per item, and the line limit (${patch.maxChangedLines} changed lines).
-2. Read the prompt file, docs/module_contracts.md, and docs/conventions.md if it exists.
+2. Read the prompt file, docs/module_contracts.md${rulesRead}, and docs/conventions.md if it exists.
 3. Fix every item, update the affected tests, run the whole test suite, and write your patch report.`,
   {
     agentType: 'module-pipeline:patcher',
@@ -124,7 +127,7 @@ const review = await agent(
 2. Run the project's compile and test commands on the run branch:
    ${CLI} diagnostics --run ${runId}
    Put its \`failed\` field and a one or two line summary into \`diagnostics\`.
-3. Review the commit (\`git show <commit>\`) against the task in the merge output: every acceptance criterion is one rework item that must now be resolved. Report each item that is not, and anything the patch broke, as a rework item.
+3. Review the commit (\`git show <commit>\`) against the task in the merge output: every acceptance criterion is one rework item that must now be resolved. Report each item that is not, and anything the patch broke${rules ? ` or any rule in ${rules} it sidesteps` : ''}, as a rework item.
 
 The patcher's own account follows. It is a claim to verify against the code, not evidence:
 ${fence(`Summary: ${impl ? impl.summary : '(patcher returned nothing)'}\nTests: ${impl ? impl.testsRun : '-'}\nBlockers: ${impl && impl.blockers && impl.blockers.length ? impl.blockers.join('; ') : 'none'}`)}

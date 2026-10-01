@@ -20,6 +20,7 @@ effort:                           # thinking effort per role: low | medium | hig
 shared_layer:                     # required with two or more modules
   task: shared                    # the module that builds it; it runs first, every other module depends on it
   # existing: [src/shared/, tests/support/]   # instead of task: folders that already hold it
+  rules: docs/cross_module_rules.md   # required with two or more modules: time, state, numbers, order, errors
 diagnostics:
   compile_command: ["dotnet", "build"]   # argv list or a shell string; null if none
   test_command: ["dotnet", "test"]       # full test suite after modules merge; null if none
@@ -98,6 +99,30 @@ one:
 Implementers and reviewers are told the shared-layer folders; reviewers flag
 code that duplicates what the shared layer provides.
 
+## Cross-module rules
+
+Helpers are only half of what modules share. The other half is decisions:
+how time advances and is compared, where state lives and what resets it. An
+agent that sees only contracts answers these alone, so one module sums time
+step by step, another adds a tolerance, and a third keeps a switch on an
+object a restart replaces. Each module passes its review; the defects sit
+between them.
+
+- `shared_layer.rules`: the file that settles them, written by the Main
+  Architect (template: `cross-module-rules.md` next to this file). Required
+  with two or more modules; optional in a patch manifest.
+- It must have these headings, each with text under it (HTML comments do not
+  count; a topic that does not apply says "Not applicable" and why):
+  `Time`, `State`, `Numbers`, `Order`, `Errors`. Validate and prepare report
+  what is missing.
+- Each rule names the shared-layer export that carries it out and the test
+  that pins it; `integration.acceptance` holds one end-to-end check per rule.
+- Every agent's claim or merge output names the file as `rules`. Module
+  reviewers block a module that sidesteps a rule. The system reviewer
+  answers for every topic in `rule_checks` (`followed`, `violated`,
+  `not_applicable`); one `violated` entry makes the integration result
+  `rework_required`.
+
 ## Module size
 
 Set `project.estimated_lines` to the expected source lines (tests excluded).
@@ -121,7 +146,7 @@ small local fix. It has a `patch:` section instead of `tasks` and
 version: 1
 project: { name: Card Game, spec: docs/spec.md }
 run: { id: run-001-r1, goal: Fix the opening balance }
-shared_layer: { existing: [src/shared/] }   # optional, shown to the agents
+shared_layer: { existing: [src/shared/], rules: docs/cross_module_rules.md }   # optional, shown to the agents
 patch:
   prompt_file: work/prompts/run-001-r1/patch.md   # every item quoted in full
   allowed_files: [src/data/, tests/data/, tests/enemies/]
@@ -152,7 +177,8 @@ never cause a scope violation.
 ## Rules the validator enforces
 
 - Every module task has an `owned_folder` (legacy manifests may use `owned_script` for a single file).
-- With two or more modules, `shared_layer` names a task (without `depends_on`) or existing folders.
+- With two or more modules, `shared_layer` names a task (without `depends_on`) or existing folders,
+  and `shared_layer.rules` names the cross-module rules file, which must exist and cover every topic.
 - `project.estimated_lines`, when set, is a positive whole number.
 - One module folder has one owner: no two modules may own the same folder or nested folders
   (`src/player/` and `src/player/ai/` clash; `src/player/` and `src/players/` do not). Test and support folders count too.

@@ -21,6 +21,11 @@ interface request paths, acceptance criteria.
   belong to their modules. After every shell command you are told about files
   outside your scope; undo them at once, or the integration is rejected.
 - Project rules are in docs/conventions.md when it exists; follow them.
+- The cross-module rules file (`rules` in the claim output) says who
+  advances time, where shared state lives and what resets it, and the order
+  of work. The glue carries these out: keep state where the rules put it, so
+  nothing that should outlive a restart is recreated, and call modules in
+  the order they give. Do not smooth over a module that breaks a rule.
 - Integrate through each module's public API as docs/module_contracts.md and
   the module reports describe it. Read module source only to settle an API
   the docs leave unclear.

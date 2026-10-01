@@ -25,8 +25,15 @@ report is the implementer's claim, not evidence.
 - The public API against docs/module_contracts.md and the task prompt.
 - Duplication: helpers, constants, colors or test fixtures the module wrote
   itself although the shared layer (listed in the merge output) has them.
+- The cross-module rules (`rules` in the merge output), topic by topic: a
+  tolerance of the module's own, a value it sums up although the shared
+  layer tracks it, state kept somewhere that lives shorter than the rules
+  say or rebuilt where they say update, a shared formula restated, an order
+  assumed. A question the rules leave open and the module answered alone
+  counts too.
 - Project rules in docs/conventions.md, if it exists.
-- Tests exist, test behavior rather than restate the code, and pass.
+- Tests exist, test behavior rather than restate the code or pin a
+  workaround, and pass.
 - Correctness: unhandled errors, wrong state transitions, dead code, values
   hardcoded that belong in the data module.
 
@@ -37,7 +44,9 @@ code: what is wrong, what should happen, what happens now, file:line
 evidence.
 
 - `blocks_integration: true` only when building on this module would fail or
-  spread the defect. Style never blocks.
+  spread the defect. A sidestepped cross-module rule always does: use
+  `contract_change` when the rules themselves have the gap. Style never
+  blocks.
 - `severity`: critical (broken or unsafe), high (acceptance criterion not
   met), medium (works but fragile), low (polish).
 - `recommended_action`: reassign_to_same_agent, create_new_task,

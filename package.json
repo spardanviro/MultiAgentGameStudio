@@ -1,6 +1,6 @@
 {
   "name": "multiagent-system",
-  "version": "0.6.1",
+  "version": "0.7.0",
   "private": true,
   "description": "Marketplace repository for the module-pipeline Claude Code plugin.",
   "scripts": {

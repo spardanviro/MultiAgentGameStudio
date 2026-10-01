@@ -20,6 +20,9 @@ const CLI = `node "${pluginRoot}/scripts/pipeline.mjs"`
 const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max']
 // Every agent runs on the strongest model; roles differ only in thinking effort.
 const model = args.model || 'opus'
+// The cross-module rules file (shared_layer.rules), when the run has one.
+const rules = typeof args.rules === 'string' ? args.rules : null
+const rulesRead = rules ? `, ${rules} (the cross-module rules)` : ''
 
 const IMPL_SCHEMA = {
   type: 'object',
@@ -74,10 +77,24 @@ const SYSTEM_ITEM = {
   },
 }
 
+// One entry per topic of the cross-module rules file. No single module review
+// can see whether every module does these the same way, so the system
+// reviewer has to answer for each.
+const RULE_CHECK = {
+  type: 'object',
+  required: ['topic', 'status', 'evidence'],
+  properties: {
+    topic: { type: 'string', description: 'A heading of the cross-module rules file' },
+    status: { type: 'string', enum: ['followed', 'violated', 'not_applicable'] },
+    evidence: { type: 'string', description: 'What you searched or ran, and file:line of every place that sidesteps the rule' },
+  },
+}
+
 const SYSTEM_REVIEW_SCHEMA = {
   type: 'object',
-  required: ['verdict', 'summary', 'spec_coverage', 'rework_items'],
+  required: ['verdict', 'summary', 'spec_coverage', 'rework_items', ...(rules ? ['rule_checks'] : [])],
   properties: {
+    rule_checks: { type: 'array', items: RULE_CHECK },
     merge: MERGE_SCHEMA,
     diagnostics: DIAGNOSTICS_SCHEMA,
     verdict: { type: 'string', enum: ['pass', 'rework', 'not_merged'] },
@@ -115,7 +132,7 @@ Run goal: ${goal || '(see the spec)'}
 1. Claim your worktree first:
    ${CLI} claim --run ${runId} --task integration
    It prints your task as JSON: prompt file, the files you may write, report and interface request paths, acceptance criteria.
-2. Read the prompt file, docs/architecture.md, docs/module_contracts.md, docs/conventions.md if it exists, and the module reports.
+2. Read the prompt file, docs/architecture.md, docs/module_contracts.md${rulesRead}, docs/conventions.md if it exists, and the module reports.
 3. Wire the modules together, run the project's build and tests, and write your integration report.
 
 Merged modules: ${modules.join(', ')}`,
@@ -141,6 +158,9 @@ const steps = [
    ${CLI} diagnostics --run ${runId}
    Put its \`failed\` field and a one or two line summary into \`diagnostics\`; its log file has the full output.`,
   `Review the integrated result on branch ${runBranch} against the spec${spec ? ` (${spec})` : ''}. Your working directory may be on another branch; read files with \`git show ${runBranch}:<path>\`. The manifest (${manifest}) lists every module, its folder and its report.`,
+  rules
+    ? `Audit the seams against ${rules}. For every topic heading in it, search all module folders and the glue (\`git grep <pattern> ${runBranch}\`) for code or tests that sidestep the rule, and run a short end-to-end check where one settles it. Put one entry per topic into \`rule_checks\`, and write a rework item with \`blocks_release: true\` for every violation.`
+    : null,
 ].filter(Boolean)
 
 const review = await agent(
@@ -163,13 +183,16 @@ Number issues SYS-1, SYS-2, and so on.`,
 const merge = integration ? (review && review.merge) || null : { status: 'already_merged' }
 const diagnostics = (review && review.diagnostics) || null
 const blockingItems = (review ? review.rework_items || [] : []).filter((item) => item.blocks_release === true || item.severity === 'critical')
+// A broken cross-module rule blocks the run even when the reviewer wrote no
+// blocking item for it: such defects sit between modules and spread.
+const ruleViolations = (review ? review.rule_checks || [] : []).filter((check) => check.status === 'violated')
 // 'empty' means the existing glue already fits (common in rework runs).
 const integrationFailed = !merge || (merge.status !== 'merged' && merge.status !== 'empty' && merge.status !== 'already_merged')
 const status = !review
   ? 'review_missing'
   : integrationFailed
     ? 'integration_failed'
-    : blockingItems.length
+    : blockingItems.length || ruleViolations.length
       ? 'rework_required'
       : !diagnostics || diagnostics.failed
         ? 'diagnostics_failed'
@@ -183,7 +206,10 @@ return {
   integration: merge,
   integrator: impl,
   diagnostics,
-  review: review ? { verdict: review.verdict, summary: review.summary, spec_coverage: review.spec_coverage, rework_items: review.rework_items } : null,
+  review: review
+    ? { verdict: review.verdict, summary: review.summary, spec_coverage: review.spec_coverage, rule_checks: review.rule_checks || [], rework_items: review.rework_items }
+    : null,
   blockingItems,
+  ruleViolations,
   next: status === 'passed' ? 'merge_run_branch' : 'rework',
 }

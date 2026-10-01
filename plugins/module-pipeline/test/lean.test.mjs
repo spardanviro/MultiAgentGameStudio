@@ -8,9 +8,11 @@ import yaml from '../scripts/vendor/js-yaml.mjs';
 import { DEFAULT_MANIFEST, PLUGIN_ROOT, cli, git, makeAgentWorktree, makeProject, write } from './helpers.mjs';
 
 const parse = (text) => validateManifest(yaml.load(text), path.resolve('/p/tasks/task_manifest.yaml'));
-const withShared = (section) => DEFAULT_MANIFEST.replace('shared_layer:\n  existing: [src/common/]\n', section);
+const RULES_LINE = '  rules: docs/cross_module_rules.md\n';
+const SHARED_SECTION = `shared_layer:\n  existing: [src/common/]\n${RULES_LINE}`;
+const withShared = (section) => DEFAULT_MANIFEST.replace(SHARED_SECTION, section);
 
-const SHARED_TASK_MANIFEST = withShared('shared_layer:\n  task: shared\n').replace(
+const SHARED_TASK_MANIFEST = withShared(`shared_layer:\n  task: shared\n${RULES_LINE}`).replace(
   'tasks:\n',
   `tasks:
   - id: shared
@@ -26,18 +28,18 @@ test('a run with two or more modules must name its shared layer', () => {
   assert.throws(() => parse(withShared('shared_layer: {}\n')), /shared_layer needs task/);
   assert.throws(() => parse(withShared('shared_layer:\n  task: nope\n')), /shared_layer\.task references unknown task: nope/);
 
-  const single = DEFAULT_MANIFEST.replace('shared_layer:\n  existing: [src/common/]\n', '').split('  - id: enemy')[0] +
+  const single = withShared('').split('  - id: enemy')[0] +
     'integration:\n  prompt_file: work/prompts/integration.md\n  allowed_files:\n    - src/game/\n';
   assert.equal(parse(single).sharedLayer, null, 'one module needs no shared layer');
 
   const existing = parse(DEFAULT_MANIFEST);
-  assert.deepEqual(existing.sharedLayer, { taskId: null, paths: ['src/common/'] });
+  assert.deepEqual(existing.sharedLayer, { taskId: null, paths: ['src/common/'], rules: 'docs/cross_module_rules.md' });
   assert.deepEqual(existing.tasks.map((task) => task.dependsOn), [[], [], ['player']], 'existing folders add no dependency');
 });
 
 test('the shared-layer task runs first, alone, and every other module depends on it', () => {
   const manifest = parse(SHARED_TASK_MANIFEST);
-  assert.deepEqual(manifest.sharedLayer, { taskId: 'shared', paths: ['src/shared/', 'tests/support/'] });
+  assert.deepEqual(manifest.sharedLayer, { taskId: 'shared', paths: ['src/shared/', 'tests/support/'], rules: 'docs/cross_module_rules.md' });
   assert.deepEqual(Object.fromEntries(manifest.tasks.map((task) => [task.id, task.dependsOn])), {
     shared: [],
     player: ['shared'],
@@ -118,13 +120,13 @@ test('too many modules for the size is a warning, not an error', () => {
     .map((id) => `  - id: ${id}\n    owned_folder: src/${id}/\n    prompt_file: work/prompts/${id}.md\n`)
     .join('');
   const manifest = parse(
-    `version: 1\nproject:\n  name: Tiny\n  estimated_lines: 2000\nrun:\n  id: run-001\nshared_layer:\n  existing: [src/common/]\ntasks:\n${many}`,
+    `version: 1\nproject:\n  name: Tiny\n  estimated_lines: 2000\nrun:\n  id: run-001\nshared_layer:\n  existing: [src/common/]\n  rules: docs/cross_module_rules.md\ntasks:\n${many}`,
   );
   assert.match(manifest.warnings[0], /7 modules for about 2000 lines is too fine.*Merge them into 2-6 modules/);
 });
 
 test('an existing shared-layer folder must exist', () => {
-  const { root, manifest } = makeProject(withShared('shared_layer:\n  existing: [src/common/, src/missing/]\n'));
+  const { root, manifest } = makeProject(withShared(`shared_layer:\n  existing: [src/common/, src/missing/]\n${RULES_LINE}`));
   const { json } = cli(root, 'validate', manifest);
   assert.equal(json.ok, false);
   assert.deepEqual(json.errors, ['shared_layer.existing does not exist: src/missing/']);

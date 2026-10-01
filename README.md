@@ -74,6 +74,13 @@ codebase that splits cleanly into modules.
 - **Builds a shared layer first.** Helpers, constants, theme values and test
   fixtures that several modules need are built by one module in the first wave,
   and every other module imports them instead of writing its own copy.
+- **Settles the cross-module rules up front.** Module agents see contracts,
+  never each other's code, so a question several modules must answer the same
+  way (how time advances and is compared, where state lives and what resets
+  it, units and rounding, the order of work, error handling) would get a
+  different answer in each. The architect answers them once in
+  `docs/cross_module_rules.md`, the shared layer provides the code behind
+  each rule, and the system reviewer audits every rule across all modules.
 - **Implements modules in parallel.** A Claude Code dynamic workflow starts one
   agent per module, each in its own isolated git worktree. Modules run in
   dependency *waves*: a module starts only after the modules it depends on are
@@ -298,6 +305,16 @@ the next free `run-NNN`.
 - Designs the shared layer: helpers, constants, theme values and test fixtures
   that more than one module needs. One module builds it first; the others
   depend on it.
+- Writes `docs/cross_module_rules.md` under five required headings: **Time**
+  (who advances it, a representation that cannot drift, how thresholds and
+  cooldowns are computed), **State** (a table: owner, lifetime, writer and
+  what resets each piece), **Numbers** (units, rounding, the one home of each
+  shared formula), **Order** (the order of work in a step, when readers see
+  it) and **Errors**. Each rule names the shared-layer export that carries it
+  out, what modules must not do instead, and an exact-number check: a test in
+  the shared layer and one end-to-end line in `integration.acceptance`.
+  Rules the spec does not settle are the architect's decisions, and you see
+  them listed before anything is committed.
 - Splits the rest of the spec into modules. Each module is one cohesive feature
   that one agent can finish in one session, and each owns one folder. Data is kept apart
   from code, and simulation apart from presentation. There is no universal
@@ -346,8 +363,10 @@ The default manifest is `tasks/task_manifest.yaml`.
      in the main checkout if it is on the run branch, otherwise in the merge
      worktree `.multiagent/pipeline/merge/<run>`.
    - **Review:** the same `module-reviewer` then checks the merged module
-     read-only, including code that duplicates the shared layer, and returns
-     rework items.
+     read-only, including code that duplicates the shared layer or sidesteps
+     a cross-module rule (a tolerance of its own, time it sums up itself,
+     state kept where a restart drops it), and returns rework items. A
+     sidestepped rule blocks integration.
 
    Modules that depend on a module that failed to merge are skipped.
 3. Runs diagnostics on the run branch: `compile_command` first, then
@@ -368,6 +387,12 @@ runs after every module is merged.
   diagnostics (build and test suite), then checks the whole run branch against
   the spec and returns a spec coverage table (done, partial or missing for each
   requirement) and rework items.
+- The system reviewer also audits the seams. For every topic of the
+  cross-module rules it searches all modules and the glue for the same
+  question answered twice or outside the shared layer, and reports one
+  `rule_checks` entry per topic (`followed`, `violated` or
+  `not_applicable`, with evidence). One violated rule makes the result
+  `rework_required`.
 
 ### `/module-pipeline:rework <run-id>`
 
@@ -382,6 +407,11 @@ Your session is the Main Architect again.
   diagnostics error and interface request, it picks one decision:
   `reassign_to_same_agent`, `create_new_task`, `contract_change`, `defer` or
   `ask_user`.
+- Looks for seam defects first: a violated rule, the same workaround in two
+  or more modules, state lost at a restart. These are fixed at the cause, on
+  the module path: the rule is corrected, the shared layer is reworked first
+  to provide the code behind it, then every module that worked around the
+  problem, and integration gets an end-to-end check.
 - **Chooses the path.** If every open item is a local fix (no contract change,
   no new module, at most 4 module folders, about 300 changed lines or fewer),
   it takes the **patch** path: one `patcher` agent applies every item in one
@@ -457,6 +487,7 @@ effort:                             # thinking effort per role: low | medium | h
   system_reviewer: high
 shared_layer:                       # required with two or more modules
   task: shared                      # built first; every other module depends on it
+  rules: docs/cross_module_rules.md # time, state, numbers, order, errors
 diagnostics:
   compile_command: ["npm", "run", "build"]   # argv list or shell string; null if none
   test_command: ["npm", "test"]              # whole test suite on the run branch; null if none
@@ -502,6 +533,10 @@ Rules the validator enforces:
   (`task`, which may not have `depends_on`) or folders that already hold it
   (`existing`, which must exist; rework runs use this). Only the shared-layer
   module may have a `support_folder`.
+- With two or more modules, `shared_layer.rules` names the cross-module rules
+  file. It must exist and have the headings `Time`, `State`, `Numbers`,
+  `Order` and `Errors`, each with text under it (a topic that does not apply
+  says so).
 - No task, including integration, may list a path inside another module's
   folders.
 - `depends_on` must name existing modules and must not form a cycle.
@@ -639,6 +674,7 @@ requests), see
 | --- | --- | --- |
 | `docs/architecture.md`, `docs/module_layout.md`, `docs/module_contracts.md` | Architect's design | committed |
 | `docs/conventions.md` | Project rules for the module agents, taken from your CLAUDE.md files | committed |
+| `docs/cross_module_rules.md` | What every module must do the same way: time, state, numbers, order, errors | committed |
 | `docs/spec.md` | Copy of your spec, if it lived outside the repo | committed |
 | `tasks/task_manifest*.yaml`, `work/prompts/**` | Manifests and per-module prompts | committed |
 | `work/modules/<id>/module_report.md`, `interface_request.md` | Written by module agents | committed with the module |
@@ -659,6 +695,10 @@ requests), see
 - **Put shared things in the shared layer.** Anything two modules need (a
   tolerance, a color, a test builder) belongs there, or each agent writes its
   own copy.
+- **Read the cross-module rules before you commit the plan.** They decide how
+  time is counted and where state lives for the whole project. A wrong or
+  missing rule shows up later as the same bug patched differently in several
+  modules.
 - **Depend only on real API use.** Every `depends_on` edge adds a wave and takes
   away parallelism.
 - **Tighten the contracts before running.** Most rework comes from vague public

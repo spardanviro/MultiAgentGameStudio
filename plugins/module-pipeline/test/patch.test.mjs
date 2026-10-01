@@ -55,7 +55,7 @@ test('a patch manifest has one patch task instead of modules and integration', (
     'src/player/',
     'src/hud/',
   ]);
-  assert.deepEqual(manifest.sharedLayer, { taskId: null, paths: ['src/common/'] });
+  assert.deepEqual(manifest.sharedLayer, { taskId: null, paths: ['src/common/'], rules: null });
   assert.equal(parse(PATCH_MANIFEST().replace('  max_changed_lines: 40\n', '')).patch.maxChangedLines, 300);
 
   const withTasks = `${PATCH_MANIFEST()}tasks:\n  - id: player\n    owned_folder: src/player/\n    prompt_file: work/prompts/player.md\n`;

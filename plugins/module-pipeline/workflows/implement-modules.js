@@ -21,6 +21,9 @@ const CLI = `node "${pluginRoot}/scripts/pipeline.mjs"`
 const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max']
 // Every agent runs on the strongest model; roles differ only in thinking effort.
 const model = args.model || 'opus'
+// The cross-module rules file (shared_layer.rules), when the run has one.
+const rules = typeof args.rules === 'string' ? args.rules : null
+const rulesRead = rules ? `, ${rules} (the cross-module rules)` : ''
 
 const IMPL_SCHEMA = {
   type: 'object',
@@ -90,8 +93,8 @@ Run goal: ${goal || '(see the spec)'}
 
 1. Claim your worktree first:
    ${CLI} claim --run ${runId} --task ${task.id}
-   It prints your task as JSON: prompt file, the files you may write, report and interface request paths, dependencies, acceptance criteria, and the shared-layer folders.
-2. Read the prompt file, docs/module_contracts.md, and docs/conventions.md if it exists.
+   It prints your task as JSON: prompt file, the files you may write, report and interface request paths, dependencies, acceptance criteria, the shared-layer folders, and the cross-module rules file.
+2. Read the prompt file, docs/module_contracts.md${rulesRead}, and docs/conventions.md if it exists.
 3. Implement the module, run its tests, and write your module report.`
 }
 
@@ -102,7 +105,7 @@ function reviewPrompt(task, impl) {
    ${CLI} integrate-task --run ${runId} --task ${task.id}
    It audits the implementer's worktree and commits the module on the run branch. Copy status, commit, files, violations, dropped, error (or reason) and worktree from its JSON into \`merge\`.
    If \`ok\` is not true, stop there: verdict \`not_merged\`, no rework items.
-2. Otherwise review the commit (\`git show <commit>\`) against the task in that JSON (prompt file, acceptance criteria, report, interface requests) and docs/module_contracts.md.
+2. Otherwise review the commit (\`git show <commit>\`) against the task in that JSON (prompt file, acceptance criteria, report, interface requests), docs/module_contracts.md${rules ? ` and ${rules} (the cross-module rules; a module that sidesteps one blocks integration)` : ''}.
 
 The implementer's own account follows. It is a claim to verify against the code, not evidence:
 ${fence(`Summary: ${impl ? impl.summary : '(implementer returned nothing)'}\nTests: ${impl ? impl.testsRun : '-'}\nInterface requests: ${impl && impl.interfaceRequests ? impl.interfaceRequests.join('; ') : '-'}`)}

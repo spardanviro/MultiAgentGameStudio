@@ -306,6 +306,7 @@ function cmdPrepare({ positional, flags }) {
     goal: manifest.goal,
     model: manifest.model,
     efforts: manifest.efforts,
+    rules: manifest.sharedLayer?.rules || null,
   };
 
   if (manifest.patch) {
@@ -417,6 +418,7 @@ function cmdClaim({ flags }) {
     syncedToRunBranch: synced,
     task: taskInfo(task),
     sharedLayer: manifest.sharedLayer?.taskId === taskId ? null : manifest.sharedLayer?.paths || null,
+    rules: manifest.sharedLayer?.rules || null,
   };
 }
 
@@ -547,6 +549,7 @@ function cmdIntegrateTask({ flags }) {
       ...outcome,
       task: taskInfo(task),
       sharedLayer: manifest.sharedLayer?.taskId === taskId ? null : manifest.sharedLayer?.paths || null,
+      rules: manifest.sharedLayer?.rules || null,
     };
   });
 }

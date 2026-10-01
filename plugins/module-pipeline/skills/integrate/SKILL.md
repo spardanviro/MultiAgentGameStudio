@@ -61,7 +61,10 @@ Write the result as JSON to
 report to `.multiagent/pipeline/runs/<runId>-integration-report.md`: the
 integration outcome, diagnostics (the full result is in the run state, see
 `CLI status --run <runId>`, and in the log file it names), the spec coverage
-table, and the system reviewer's `rework_items` as a YAML block.
+table, the seam audit (`rule_checks`: one row per cross-module rule topic
+with its status and evidence), and the system reviewer's `rework_items` as a
+YAML block. A `violated` rule makes the status `rework_required` even
+without a blocking item.
 
 Tell the user the status:
 

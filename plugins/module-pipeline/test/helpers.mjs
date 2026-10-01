@@ -31,6 +31,11 @@ export function cli(cwd, ...args) {
   return { code: result.status, json };
 }
 
+/** A cross-module rules file that covers every required topic. */
+export const RULES_TEXT = ['Time', 'State', 'Numbers', 'Order', 'Errors']
+  .map((topic) => `## ${topic}\n\nRule: decided.\n`)
+  .join('\n');
+
 export const DEFAULT_MANIFEST = `version: 1
 project:
   name: Game
@@ -44,6 +49,7 @@ diagnostics:
   compile_command: null
 shared_layer:
   existing: [src/common/]
+  rules: docs/cross_module_rules.md
 tasks:
   - id: player
     feature: Player
@@ -80,6 +86,7 @@ export function makeProject(manifestText = DEFAULT_MANIFEST) {
   }
   write(root, 'src/player/player.gd', 'class_name Player\n');
   write(root, 'src/common/util.gd', 'class_name Util\n');
+  write(root, 'docs/cross_module_rules.md', RULES_TEXT);
   write(root, 'tasks/task_manifest.yaml', manifestText);
   git(root, 'add', '.');
   git(root, 'commit', '-q', '-m', 'init');

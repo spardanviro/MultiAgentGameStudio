@@ -3,6 +3,86 @@
 All notable changes to the module-pipeline plugin. Versions follow
 `plugins/module-pipeline/.claude-plugin/plugin.json`.
 
+## 0.9.0 - 2026-10-02
+
+The pipeline runs under Claude Code's Bash sandbox. Found by probing the
+sandbox in WSL2 and then running the module and integration stages there for
+real, with the project writable and with its sources denied for writing.
+
+### Fixed
+
+- The lock told a live holder by its process id. Every sandboxed command has
+  its own process namespace, so a waiting merge saw the holder as gone and
+  took its lock. A holder now touches the lock every 2 seconds from a worker
+  thread; a holder that cannot be seen (another sandbox, another machine) is
+  judged by that heartbeat, and its lock is free after 30 silent seconds. A
+  holder that can be seen is still asked directly.
+- The sandbox binds device nodes over protected paths in the working
+  directory (`.mcp.json`, `.claude/commands`, `.bashrc` and others). They
+  were taken for uncommitted files, so `prepare` refused to start, a claim
+  could not move its worktree to the run branch, and they could count as
+  out-of-scope changes. Entries git cannot track are now ignored everywhere.
+- With the main checkout on another branch, the manifest, the prompts and
+  the rules file were still looked for in the working tree, where planning
+  output committed on the run branch does not exist. They are now read from
+  the run branch, by `validate`, `prepare` and every command of a running
+  stage.
+- A worktree that git removed but could not finish cleaning (the sandbox
+  holds entries in its metadata folder) is treated as removed, and its
+  branch is deleted.
+
+### Added
+
+- `prepare` stops with a clear message, and a `readOnly` list, when the main
+  checkout is on the run branch but cannot be written
+  (`sandbox.filesystem.denyWrite`), instead of failing in the middle of a
+  merge.
+- A claim made inside the sandbox carries a `sandboxNote`: `git add -A`
+  fails there, so name the paths or do not commit.
+- README: "Running under the Bash sandbox", with the open and the strict
+  setup and what to expect in each.
+
+## 0.8.1 - 2026-10-01
+
+Fixes from an outside review of the gates.
+
+### Fixed
+
+- The integration status could be `passed` while the system review listed a
+  feature as `partial` or `missing`, when no blocking item was written for
+  it. The status now counts such rows (`coverageGaps`) as blocking. A row is
+  exempt only when the reviewer marks it `deferred` and names where the spec
+  or a rework decision puts it off.
+- The pipeline lock was deleted after 10 minutes whatever its holder was
+  doing, so a merge whose git hooks ran longer could be joined by a second
+  merge. A lock is now stale only when the process that holds it is gone;
+  age decides only for a lock from another machine or an unreadable one. A
+  crashed holder's lock is taken over at once instead of after 10 minutes,
+  and a process releases only its own lock.
+- Build output such as `1 error, 0 warnings` or `0 errors, 2 warnings` was
+  skipped whole, because any line with a zero count was ignored. A summary
+  line is now judged by its numbers.
+
+### Changed
+
+- A pipeline writer's shell command is refused before it runs
+  (`PreToolUse` on Bash) when its text shows a write into the main checkout
+  or another agent's worktree: a redirection, a file-changing command, or a
+  mutating git command aimed there by absolute path, through `..`, or after
+  a `cd`. Reading there is never refused, and neither is a command that
+  only mentions the path (in a string, a here-document, a comment).
+- `record` lists files left uncommitted in the main checkout
+  (`strayChanges`), which no pipeline merge writes.
+- The docs say what the scope guard guarantees: only in-scope changes are
+  merged. It is not a sandbox; a program can still write outside the
+  worktree in ways a command's text does not show. They also say what a
+  probe on Claude Code 2.1.284 (Windows) and 2.1.286 (WSL2, sandbox on)
+  showed: Claude Code refuses a worktree agent's Write tool and `git -C` on
+  the main checkout but not its shell writes there; the Bash sandbox (macOS,
+  Linux and WSL2 only) stops writes outside the project; and
+  `sandbox.filesystem.denyWrite` makes listed paths of the main checkout
+  read-only while agents keep their worktrees.
+
 ## 0.8.0 - 2026-10-01
 
 Less waste, from measuring where the benchmark run spent its tokens and time:

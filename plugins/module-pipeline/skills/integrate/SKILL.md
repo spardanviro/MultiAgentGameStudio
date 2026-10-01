@@ -25,6 +25,10 @@ Run `CLI prepare "MANIFEST" --stage integration` from the project root.
 - `ok: false` with `uncommitted` files: handle it as /module-pipeline:run
   does: ask, and commit only with a yes via `CLI commit-planning "MANIFEST"`,
   then prepare again.
+- `ok: false` with `readOnly` paths: the sandbox keeps the main checkout
+  read-only while it is on the run branch. Show the error and stop: the user
+  switches the main checkout to another branch from their own terminal and
+  runs this again.
 - Any other error (modules not merged yet, the session is not in the
   project): show it and stop (status `blocked`). Do not `cd` elsewhere.
 - `modulesStatus` is not `passed`: tell the user the module stage did not
@@ -68,6 +72,12 @@ the report is, and the next step (`nextCommand`):
 
 - `passed`: the run branch `multiagent-runs/<runId>` is ready for
   `/module-pipeline:finish <runId>`. Do not merge it yourself here.
-- `rework_required` (blocking items, or a violated cross-module rule even
-  without one), `integration_failed`, `diagnostics_failed`,
-  `review_missing`: `/module-pipeline:rework <runId>`.
+- `rework_required` (blocking items; or, even without one, a violated
+  cross-module rule or a feature in `coverageGaps` that the review found
+  partial or missing and not deferred), `integration_failed`,
+  `diagnostics_failed`, `review_missing`: `/module-pipeline:rework <runId>`.
+
+If the output has `strayChanges`, list them: files left uncommitted in the
+main checkout that no pipeline merge wrote (a build or test command, an
+agent's shell, or the user's own edits). Ask the user to look at them; do
+not delete or commit them yourself.

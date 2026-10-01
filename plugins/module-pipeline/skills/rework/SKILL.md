@@ -49,7 +49,9 @@ error, and interface request, choose one:
 - **create_new_task**: a new module with its own new folder (scaffold it).
 - **contract_change**: update docs/module_contracts.md, then rework every
   module the change touches.
-- **defer**: safe to leave for now; say why.
+- **defer**: safe to leave for now; say why. The decisions file is what
+  lets the next system review mark the feature `deferred` instead of
+  blocking on it, so name the feature there as the spec names it.
 - **ask_user**: the spec does not settle it. Ask the user here and wait.
 
 A `violation` usually means the module needed something outside its folder:

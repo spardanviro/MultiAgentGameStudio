@@ -78,11 +78,35 @@ function parsePorcelainZ(output) {
   return files;
 }
 
+/**
+ * False for an entry git lists but could never track: a device node, a
+ * socket, a pipe. Claude Code's Bash sandbox on Linux binds /dev/null over
+ * the configuration paths it protects (.mcp.json, .claude/skills, .bashrc and
+ * more) in the working directory. Inside the sandbox they look like untracked
+ * files; they are not project content, and `git add` refuses them.
+ */
+export function isTrackable(root, file) {
+  try {
+    const stat = fs.lstatSync(path.join(root, file));
+    return stat.isFile() || stat.isSymbolicLink() || stat.isDirectory();
+  } catch {
+    return true; // deleted or unreadable: still a change worth reporting
+  }
+}
+
+/**
+ * True when the folder holds the sandbox's placeholder entries, so commands
+ * here run inside Claude Code's Bash sandbox.
+ */
+export function hasSandboxPlaceholders(root) {
+  return ['.mcp.json', '.claude/commands', '.claude/skills', '.claude/settings.local.json'].some((entry) => !isTrackable(root, entry));
+}
+
 /** Uncommitted changes agents would not see (their worktrees start at HEAD). */
 export function listUncommitted(root) {
   const output = git(root, ['status', '--porcelain', '-z', '--untracked-files=all']);
   return [...new Set(parsePorcelainZ(output))].filter(
-    (file) => file && !IGNORED_PREFIXES.some((prefix) => file.startsWith(prefix)),
+    (file) => file && !IGNORED_PREFIXES.some((prefix) => file.startsWith(prefix)) && isTrackable(root, file),
   );
 }
 
@@ -146,7 +170,8 @@ export function isMainCheckoutOn(root, branch) {
 }
 
 export function isClean(worktree) {
-  return !git(worktree, ['status', '--porcelain', '--untracked-files=all']).trim();
+  const output = git(worktree, ['status', '--porcelain', '-z', '--untracked-files=all']);
+  return !parsePorcelainZ(output).some((file) => file && isTrackable(worktree, file));
 }
 
 /** Move a clean worktree to `commit`; used to start agents from the run branch tip. */
@@ -235,7 +260,9 @@ export function listBranches(root, pattern) {
 /** Files changed in a worktree relative to its base commit, including untracked ones. */
 export function changedFiles(worktree, base) {
   const tracked = git(worktree, ['diff', '--name-only', '-z', base]).split('\0');
-  const untracked = git(worktree, ['ls-files', '--others', '--exclude-standard', '-z']).split('\0');
+  const untracked = git(worktree, ['ls-files', '--others', '--exclude-standard', '-z'])
+    .split('\0')
+    .filter((file) => file && isTrackable(worktree, file));
   return [...new Set([...tracked, ...untracked].map((file) => file.trim()).filter(Boolean))].sort();
 }
 
@@ -322,7 +349,13 @@ export function applyAndCommitPatch(root, patchPath, message) {
 export function removeWorktree(root, worktree) {
   const branch = git(worktree, ['branch', '--show-current'], { allowFail: true })?.trim() || null;
   // Claude Code locks agent worktrees; a second --force removes locked ones too.
-  const removed = git(root, ['worktree', 'remove', '--force', '--force', worktree], { allowFail: true }) !== null;
+  // Inside Claude Code's sandbox git deletes the folder but reports a failure, because the sandbox
+  // holds entries in the worktree's metadata folder; the folder being gone is what counts.
+  const removed =
+    git(root, ['worktree', 'remove', '--force', '--force', worktree], { allowFail: true }) !== null || !fs.existsSync(worktree);
+  if (removed) {
+    git(root, ['worktree', 'prune'], { allowFail: true });
+  }
   if (removed && branch) {
     git(root, ['branch', '-D', branch], { allowFail: true });
   }

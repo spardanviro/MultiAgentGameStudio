@@ -585,10 +585,22 @@ export function estimateRun(manifest, done = new Set()) {
   };
 }
 
-export function loadManifest(manifestPath) {
+/**
+ * @param {string} manifestPath where the manifest lives in the project (it decides the project root)
+ * @param {string} [text] its content when it is read from somewhere else, such as a git branch
+ */
+export function loadManifest(manifestPath, text) {
   const absolute = path.resolve(manifestPath);
-  const raw = yaml.load(fs.readFileSync(absolute, 'utf8'));
+  const raw = yaml.load(text ?? fs.readFileSync(absolute, 'utf8'));
   return validateManifest(raw, absolute);
+}
+
+/** The project's files as they are in the working tree. */
+export function workingTreeFiles(projectRoot) {
+  return {
+    exists: (rel) => fs.existsSync(path.join(projectRoot, rel)),
+    read: (rel) => fs.readFileSync(path.join(projectRoot, rel), 'utf8'),
+  };
 }
 
 /**
@@ -616,29 +628,29 @@ export function checkRulesFile(text) {
   });
 }
 
-/** Missing prompt files and shared-layer folders, and gaps in the cross-module rules file (reported by validate/prepare). */
-export function findMissingPromptFiles(manifest) {
+/**
+ * Missing prompt files and shared-layer folders, and gaps in the cross-module rules file (reported by validate/prepare).
+ * @param {{exists: (rel: string) => boolean, read: (rel: string) => string}} [files] where to look; the working tree by default
+ */
+export function findMissingPromptFiles(manifest, files = workingTreeFiles(manifest.projectRoot)) {
   const prompts = [...manifest.tasks, manifest.integration, manifest.patch]
     .filter(Boolean)
-    .filter((task) => !fs.existsSync(path.join(manifest.projectRoot, task.promptFile)))
+    .filter((task) => !files.exists(task.promptFile))
     .map((task) => `${task.id}.prompt_file does not exist: ${task.promptFile}`);
   const existing = manifest.sharedLayer && !manifest.sharedLayer.taskId ? manifest.sharedLayer.paths : [];
-  const shared = existing
-    .filter((entry) => !fs.existsSync(path.join(manifest.projectRoot, entry)))
-    .map((entry) => `shared_layer.existing does not exist: ${entry}`);
-  return [...prompts, ...shared, ...rulesProblems(manifest)];
+  const shared = existing.filter((entry) => !files.exists(entry)).map((entry) => `shared_layer.existing does not exist: ${entry}`);
+  return [...prompts, ...shared, ...rulesProblems(manifest, files)];
 }
 
-function rulesProblems(manifest) {
+function rulesProblems(manifest, files) {
   const rules = manifest.sharedLayer?.rules;
   if (!rules) {
     return [];
   }
-  const file = path.join(manifest.projectRoot, rules);
-  if (!fs.existsSync(file)) {
+  if (!files.exists(rules)) {
     return [`shared_layer.rules does not exist: ${rules}`];
   }
-  return checkRulesFile(fs.readFileSync(file, 'utf8')).map((problem) => `shared_layer.rules (${rules}) ${problem}`);
+  return checkRulesFile(files.read(rules)).map((problem) => `shared_layer.rules (${rules}) ${problem}`);
 }
 
 export function findTask(manifest, taskId) {

@@ -6,19 +6,32 @@
 // inside its own claimed worktree and may only write the files its task
 // allows. Errors deny the write (fail closed).
 //
-// PostToolUse (Bash): shell commands cannot be checked before they run, so
-// after each one the worktree is compared with the task's scope and the agent
-// is told at once about files outside it, while it can still undo them.
-// Errors here are ignored; the audit before merging is the final check.
+// PreToolUse (Bash): a command whose text shows a write into the main project
+// checkout is refused (lib/shell.mjs). Reading there is never refused. This
+// catches the usual slip; it is not a sandbox.
+//
+// PostToolUse (Bash): what a shell command writes cannot be known before it
+// runs, so after each one the worktree is compared with the task's scope and
+// the agent is told at once about files outside it, while it can still undo
+// them. Errors here are ignored; the audit before merging is the final check.
+//
+// What these guarantee: only in-scope changes are merged into the run branch.
+// They do not confine the shell. A command can still write outside the
+// worktree in a way its text does not show (a path built at run time, a
+// program that writes by itself). Only an OS sandbox confines a shell.
 import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { changedFiles } from './lib/git.mjs';
 import { samePath } from './lib/paths.mjs';
 import { auditChanges, createScopeMatcher, toRootRelative } from './lib/scope.mjs';
+import { findProtectedWrite } from './lib/shell.mjs';
 import { findGitRoot, projectRootForWorktree, readClaim } from './lib/state.mjs';
 
 const WRITER_AGENT = /(^|:)(module-implementer|integrator|patcher)$/;
 const MAX_LISTED = 15;
+const PLUGIN_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 const isWriter = (input) => WRITER_AGENT.test(String(input?.agent_type || ''));
 
@@ -33,12 +46,48 @@ function deny(reason) {
 }
 
 /**
+ * PreToolUse (Bash) for a pipeline writer: refuse a command whose text shows
+ * a write into the main project checkout or another agent's worktree (a
+ * redirection, a file-changing command or a mutating git command aimed
+ * there). Reading there is never refused. Errors let the command through; the
+ * write hook and the merge audit still apply.
+ */
+function decideShell(input) {
+  try {
+    const cwd = input.cwd || process.cwd();
+    const gitInfo = findGitRoot(cwd);
+    if (!gitInfo?.isLinkedWorktree) {
+      return null;
+    }
+    const projectRoot = projectRootForWorktree(gitInfo);
+    const hit = findProtectedWrite(String(input.tool_input?.command || ''), {
+      cwd,
+      protectedRoot: projectRoot,
+      // Its own worktree, the plugin and the temp folder may sit under the project root.
+      allowed: [gitInfo.root, PLUGIN_ROOT, os.tmpdir()],
+    });
+    if (!hit) {
+      return null;
+    }
+    return deny(
+      `\`${hit.command}\` would change ${hit.path}, which is in the main project checkout (${projectRoot}), not in your worktree ` +
+        `(${gitInfo.root}). Change files only inside your worktree, with relative paths. Reading the main checkout is fine.`,
+    );
+  } catch {
+    return null;
+  }
+}
+
+/**
  * @param {object} input PreToolUse hook input
  * @returns {object|null} hook output, or null to let the call proceed
  */
 export function decide(input) {
   if (!isWriter(input)) {
     return null;
+  }
+  if (input.tool_name === 'Bash') {
+    return decideShell(input);
   }
   try {
     const gitInfo = findGitRoot(input.cwd || process.cwd());

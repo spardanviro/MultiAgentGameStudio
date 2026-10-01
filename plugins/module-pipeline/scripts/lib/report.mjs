@@ -131,7 +131,16 @@ function integrationReport(result) {
   }
   lines.push(`## System review (${review.verdict})`, '', review.summary || '', '');
   if (review.spec_coverage?.length) {
-    lines.push('### Spec coverage', '', ...table(['Feature', 'Status', 'Owner'], review.spec_coverage.map((row) => [row.feature, row.status, row.owner])), '');
+    const state = (row) => (row.status !== 'done' && row.deferred === true ? `${row.status} (deferred)` : row.status);
+    lines.push(
+      '### Spec coverage',
+      '',
+      ...table(['Feature', 'Status', 'Owner', 'Note'], review.spec_coverage.map((row) => [row.feature, state(row), row.owner, row.note])),
+      '',
+    );
+    if (result.coverageGaps?.length) {
+      lines.push(`${result.coverageGaps.length} feature(s) are partial or missing and not deferred; that alone makes the status \`rework_required\`.`, '');
+    }
   }
   if (review.rule_checks?.length) {
     lines.push('### Seam audit', '', ...table(['Rule topic', 'Status', 'Evidence'], review.rule_checks.map((row) => [row.topic, row.status, row.evidence])), '');
@@ -159,9 +168,24 @@ function patchReport(result) {
 
 const REPORTS = { modules: modulesReport, integration: integrationReport, patch: patchReport };
 
+function straySection(files) {
+  if (!files?.length) {
+    return [];
+  }
+  return [
+    '## Uncommitted files in the main checkout',
+    '',
+    'No pipeline merge wrote these. They come from a build or test command, from an agent\'s shell command, or from your own edits; check them before the next stage.',
+    '',
+    ...files.slice(0, 50).map((file) => `- ${file}`),
+    ...(files.length > 50 ? [`- … and ${files.length - 50} more`] : []),
+    '',
+  ];
+}
+
 /** The readable report of one stage. */
 export function reportMarkdown(result) {
-  const body = REPORTS[result.stage](result);
+  const body = [...REPORTS[result.stage](result), ...straySection(result.strayChanges)];
   return [`# ${result.runId}: ${result.stage} stage`, '', `Status: **${result.status}**. Next: ${result.next}.`, '', ...body].join('\n').replace(/\n{3,}/g, '\n\n');
 }
 

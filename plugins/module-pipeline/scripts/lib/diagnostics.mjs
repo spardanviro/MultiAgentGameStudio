@@ -5,15 +5,28 @@ import { spawnSync } from 'node:child_process';
 
 const MAX_LINES = { error: 40, warning: 20 };
 const TEST_TAIL_LINES = 40;
-const ZERO_COUNT = /\b0 (errors?|warnings?)\b/i;
+// A count in a summary line: "1 error", "0 warnings", "2 Warning(s)".
+const COUNT = /\b(\d+)\s+(error|warning)s?\b/gi;
 
 function quoteForCmd(arg) {
   return /^[\w./:=@-]+$/.test(arg) ? arg : `"${String(arg).replace(/"/g, '""')}"`;
 }
 
+/**
+ * 'error', 'warning' or null for one line of build output. In a summary line
+ * the numbers decide: "1 error, 0 warnings" is an error and "0 errors, 2
+ * warnings" a warning, while "0 errors, 0 warnings" is neither.
+ */
 export function classifyLine(line) {
-  if (!line.trim() || ZERO_COUNT.test(line)) {
+  if (!line.trim()) {
     return null;
+  }
+  const counts = [...line.matchAll(COUNT)];
+  if (counts.length) {
+    const counted = (kind) => counts.some(([, count, word]) => word.toLowerCase() === kind && Number(count) > 0);
+    // What is left once the counts are taken out is judged like any other line.
+    const rest = classifyLine(line.replace(COUNT, ' '));
+    return counted('error') || rest === 'error' ? 'error' : counted('warning') || rest === 'warning' ? 'warning' : null;
   }
   if (/\b(error|fatal)\b|\bERR!|\berror[A-Z]{1,3}\d+/i.test(line)) {
     return 'error';

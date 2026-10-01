@@ -11,7 +11,9 @@ effort: medium
 # Run the module stage
 
 Manifest: `$manifest` (if empty, use `tasks/task_manifest.yaml`). Resolve it
-to an absolute path; call that MANIFEST below. CLI below means
+to an absolute path; call that MANIFEST below. The file need not be in the
+working tree: when the main checkout is on another branch, the CLI reads it
+from the run branch. CLI below means
 `node "${CLAUDE_PLUGIN_ROOT}/scripts/pipeline.mjs"`.
 
 Every call you make carries the whole conversation, so keep this stage to the
@@ -28,6 +30,10 @@ checks the session and the checkout, and returns what the workflow needs.
   commit them as planning output. Only with a yes, run
   `CLI commit-planning "MANIFEST"`, then prepare again. Without a yes, stop:
   agents start from the run branch and would not see them.
+- `ok: false` with `readOnly` paths: the sandbox keeps the main checkout
+  read-only while it is on the run branch. Show the error and stop: the user
+  switches the main checkout to another branch from their own terminal (a
+  sandboxed `git switch` cannot change those files) and runs this again.
 - Any other error (the session is not in the project, a missing prompt, an
   incomplete rules file, a manifest error): show it and stop (status
   `blocked`). Do not `cd` elsewhere to work around it; Claude Code creates the
@@ -86,6 +92,10 @@ Tell the user, briefly, from that output alone:
 - `status`, the `diagnostics` line, and the blocking `items` (id, module,
   one line each). Say where the full report is (`reportPath`).
 - `size`, when present: the source lines built against the plan's estimate.
+- `strayChanges`, when present: files left uncommitted in the main checkout
+  that no pipeline merge wrote (a build or test command, an agent's shell,
+  or the user's own edits). List them and ask the user to look; do not
+  delete or commit them yourself.
 - The next step: `nextCommand`. For anything other than `passed` that is
   `/module-pipeline:rework <runId>`; do not fix module code yourself here.
 

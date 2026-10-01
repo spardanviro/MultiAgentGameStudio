@@ -38,6 +38,7 @@ import {
   git,
   gitIdentityProblem,
   head,
+  hasSandboxPlaceholders,
   isMainCheckoutOn,
   listBranches,
   listUncommitted,
@@ -121,6 +122,78 @@ function requireManifestArg(positional) {
     throw new UsageError('A manifest path is required.');
   }
   return loadManifest(path.resolve(positional[0]));
+}
+
+/** The project's files as committed on a branch, for when the main checkout is on another one. */
+function committedFiles(root, ref) {
+  return {
+    exists: (rel) => git(root, ['cat-file', '-e', `${ref}:${rel.replace(/\/+$/, '')}`], { allowFail: true }) !== null,
+    read: (rel) => git(root, ['show', `${ref}:${rel}`]),
+  };
+}
+
+const relativeTo = (root, file) => path.relative(root, file).replace(/\\/g, '/');
+
+/**
+ * The manifest a command was given, and where the files it names are read.
+ * Planning output is committed on the run branch. While the main checkout is
+ * on that branch the working tree is the place to look; while it is on
+ * another branch (the user switched away, or the sandbox keeps the main
+ * checkout read-only) the manifest and its files come from the run branch.
+ * @returns {{manifest: object, files: object|undefined, source: 'working-tree'|'run-branch'}}
+ */
+function resolveManifest(positional) {
+  if (!positional[0]) {
+    throw new UsageError('A manifest path is required.');
+  }
+  const absolute = path.resolve(positional[0]);
+  if (fs.existsSync(absolute)) {
+    const manifest = loadManifest(absolute);
+    const root = manifest.projectRoot;
+    const branch = getRunBranchName(manifest.runId);
+    const rel = relativeTo(root, absolute);
+    const onBranch = git(root, ['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`], { allowFail: true });
+    if (onBranch && !isMainCheckoutOn(root, branch)) {
+      const files = committedFiles(root, branch);
+      if (files.exists(rel)) {
+        return { manifest: loadManifest(absolute, files.read(rel)), files, source: 'run-branch' };
+      }
+    }
+    return { manifest, files: undefined, source: 'working-tree' };
+  }
+  let root = null;
+  try {
+    root = projectTopLevel(process.cwd());
+  } catch {
+    root = null;
+  }
+  const rel = root ? relativeTo(root, absolute) : '..';
+  if (!rel.startsWith('..')) {
+    for (const branch of listBranches(root, RUN_BRANCH_PATTERN)) {
+      const files = committedFiles(root, branch);
+      if (!files.exists(rel)) {
+        continue;
+      }
+      // Rework branches carry the earlier runs' manifests too: the one that names this branch is the run's own.
+      const manifest = loadManifest(absolute, files.read(rel));
+      if (getRunBranchName(manifest.runId) === branch) {
+        return { manifest, files, source: 'run-branch' };
+      }
+    }
+  }
+  throw new UsageError(`Manifest not found: ${absolute}. It is not in the working tree, and no run branch holds it.`);
+}
+
+/** The manifest of a run that already started, read from the run branch when the main checkout is elsewhere. */
+function loadRunManifest(root, state) {
+  if (!isMainCheckoutOn(root, state.runBranch)) {
+    const files = committedFiles(root, state.runBranch);
+    const rel = relativeTo(root, state.manifestPath);
+    if (files.exists(rel)) {
+      return loadManifest(state.manifestPath, files.read(rel));
+    }
+  }
+  return loadManifest(state.manifestPath);
 }
 
 function taskInfo(task) {
@@ -222,8 +295,8 @@ function detectBaseBranch(root, requested) {
 // ---- commands -----------------------------------------------------------------
 
 function cmdValidate({ positional }) {
-  const manifest = requireManifestArg(positional);
-  const errors = findMissingPromptFiles(manifest);
+  const { manifest, files } = resolveManifest(positional);
+  const errors = findMissingPromptFiles(manifest, files);
   return {
     ok: errors.length === 0,
     errors,
@@ -285,14 +358,30 @@ function finishedUnmerged(root, state, task) {
   return Boolean(claim.branch) && git(root, ['cat-file', '-e', `${claim.branch}:${task.moduleReport}`], { allowFail: true }) !== null;
 }
 
+/** Top-level tracked files and folders of the checkout that this process may not write. */
+function readOnlyEntries(root) {
+  const tracked = git(root, ['ls-tree', '--name-only', 'HEAD'], { allowFail: true }) || '';
+  return tracked
+    .split(/\r?\n/)
+    .filter(Boolean)
+    .filter((entry) => {
+      try {
+        fs.accessSync(path.join(root, entry), fs.constants.W_OK);
+        return false;
+      } catch (error) {
+        return error.code === 'EROFS' || error.code === 'EACCES' || error.code === 'EPERM';
+      }
+    });
+}
+
 function cmdPrepare({ positional, flags }) {
-  const manifest = requireManifestArg(positional);
+  const { manifest, files, source } = resolveManifest(positional);
   ensureProjectRepo(manifest);
   const root = manifest.projectRoot;
   ensureExcluded(root);
 
   const runBranch = getRunBranchName(manifest.runId);
-  const errors = [...sessionProblems(root), ...findMissingPromptFiles(manifest)];
+  const errors = [...sessionProblems(root), ...findMissingPromptFiles(manifest, files)];
   // Agents start from the run branch tip. Uncommitted work matters only while
   // the main checkout is on that branch (it is then likely planning output);
   // on any other branch it is the user's own work and is left alone.
@@ -303,9 +392,21 @@ function cmdPrepare({ positional, flags }) {
       `The project has uncommitted changes (${uncommitted.slice(0, 10).join(', ')}${uncommitted.length > 10 ? ', …' : ''}). Agents start from the last commit and would not see them. Commit them (commit-planning) or stash them first.`,
     );
   }
+  // A merge commits in the main checkout while it is on the run branch. Where
+  // the sandbox makes project paths read-only (sandbox.filesystem.denyWrite),
+  // that fails halfway through `git apply`, so say it before any agent starts.
+  const readOnly = isMainCheckoutOn(root, runBranch) ? readOnlyEntries(root) : [];
+  if (readOnly.length) {
+    errors.push(
+      `The main checkout is on the run branch, but it cannot be written here (${readOnly.slice(0, 6).join(', ')}${readOnly.length > 6 ? ', …' : ''}): ` +
+        "Claude Code's sandbox denies writing these paths. Merges would fail. Switch the main checkout to another branch " +
+        '(for example `git switch main`, from your own terminal: the sandbox stops a sandboxed git from changing these paths too) ' +
+        'and run this again. The pipeline then merges in its own worktree under .multiagent/.',
+    );
+  }
   if (errors.length) {
     // `uncommitted` lets the session ask the user and run commit-planning without a git call of its own.
-    return { ok: false, errors, uncommitted, runBranch };
+    return { ok: false, errors, uncommitted, readOnly, runBranch };
   }
 
   const branch = ensureRunBranchExists(root, runBranch);
@@ -323,6 +424,7 @@ function cmdPrepare({ positional, flags }) {
     projectRoot: root,
     head: branchTip(root, state.runBranch),
     mainCheckoutOnRunBranch: isMainCheckoutOn(root, state.runBranch),
+    manifestSource: source,
     goal: manifest.goal,
     spec: manifest.project.spec,
     model: manifest.model,
@@ -424,7 +526,7 @@ function cmdClaim({ flags }) {
   if (!state) {
     throw new Error(`No pipeline run ${runId} in ${root}. Run prepare first.`);
   }
-  const manifest = loadManifest(state.manifestPath);
+  const manifest = loadRunManifest(root, state);
   const task = findTask(manifest, taskId);
   const existing = readClaim(root, gitInfo.root);
   if (existing && (existing.runId !== runId || existing.taskId !== taskId)) {
@@ -456,6 +558,10 @@ function cmdClaim({ flags }) {
   // The agent's task, so the workflow prompt only has to name it.
   return {
     ok: true,
+    // In Claude Code's Bash sandbox the worktree holds device-node placeholders that git cannot add.
+    ...(hasSandboxPlaceholders(gitInfo.root)
+      ? { sandboxNote: 'This shell is sandboxed. `git add -A` fails here on placeholder entries the sandbox creates (.mcp.json, .claude/…): name the paths you add, or do not commit at all; uncommitted work in your allowed files is merged as it is.' }
+      : {}),
     worktree: claim.worktree,
     base: claim.base,
     syncedToRunBranch: synced,
@@ -568,7 +674,7 @@ function cmdIntegrateTask({ flags }) {
     if (!state) {
       throw new Error(`No pipeline run ${runId} in ${root}.`);
     }
-    const manifest = loadManifest(state.manifestPath);
+    const manifest = loadRunManifest(root, state);
     const task = findTask(manifest, taskId);
     const claims = listClaims(root)
       .filter((claim) => claim.runId === runId && claim.taskId === taskId)
@@ -608,7 +714,7 @@ function requireRunState(root, runId) {
 /** Runs the manifest's compile and test commands on the run branch and stores the outcome in the run state. */
 function diagnose(root, runId) {
   const state = requireRunState(root, runId);
-  const manifest = loadManifest(state.manifestPath);
+  const manifest = loadRunManifest(root, state);
   const { compileCommand, testCommand } = manifest.diagnostics;
   const checkout = compileCommand || testCommand
     ? withLock(root, () => runBranchCheckout(root, state.runBranch, mergeWorktreePath(root, runId)))
@@ -690,7 +796,7 @@ function cmdRecord({ flags }) {
   const state = requireRunState(root, runId);
   let manifest = null;
   try {
-    manifest = loadManifest(state.manifestPath);
+    manifest = loadRunManifest(root, state);
   } catch {
     manifest = null;
   }
@@ -708,6 +814,10 @@ function cmdRecord({ flags }) {
   }
   const passed = result.status === 'passed';
   result.next = !passed ? 'rework' : stage === 'modules' && manifest?.integration ? 'integrate' : 'finish';
+  // prepare required a clean checkout, and merges commit what they apply, so
+  // anything uncommitted on the run branch now was written around the
+  // pipeline: by a build or test command, an agent's shell, or the user.
+  result.strayChanges = isMainCheckoutOn(root, state.runBranch) ? listUncommitted(root) : [];
 
   const reportPath = path.join(pipelineDir(root), 'runs', `${runId}-${stage}-report.md`);
   writeJsonAtomic(resultPath(root, runId, stage), result);
@@ -729,6 +839,8 @@ function cmdRecord({ flags }) {
     itemCount: items.length,
     blockingCount: items.filter((item) => item.blocking).length,
     ruleViolations: result.ruleViolations || undefined,
+    coverageGaps: result.coverageGaps || undefined,
+    strayChanges: result.strayChanges.length ? result.strayChanges.slice(0, MAX_RECORD_ITEMS) : undefined,
     size: result.size || undefined,
     resultPath: resultPath(root, runId, stage),
     reportPath,

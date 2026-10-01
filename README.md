@@ -33,6 +33,7 @@ plugin, in [`plugins/module-pipeline`](plugins/module-pipeline/).
 - [The rework loop](#the-rework-loop)
 - [Finishing a run](#finishing-a-run)
 - [Files it writes](#files-it-writes)
+- [What the scope guard guarantees](#what-the-scope-guard-guarantees)
 - [Tips for good results](#tips-for-good-results)
 - [Troubleshooting](#troubleshooting)
 - [Repository layout and development](#repository-layout-and-development)
@@ -52,7 +53,7 @@ of something a prompt merely asks for:
 | Problem | What the plugin does |
 | --- | --- |
 | Agents overwrite each other | Every module owns exactly one folder. The manifest is rejected if two modules own the same or nested folders. |
-| An agent reaches outside its area | A `PreToolUse` hook blocks edits outside the module's allowed files *while the agent works*. After every shell command the agent is told about any file it left outside its scope, and an audit rejects whatever is still there before merging. |
+| An agent reaches outside its area | A `PreToolUse` hook blocks edits outside the module's allowed files *while the agent works*, and refuses a shell command whose text shows a write into the main checkout. After every shell command the agent is told about any file it left outside its scope, and an audit rejects whatever is still there before merging. This guards what gets merged; it is not a sandbox (see [What the scope guard guarantees](#what-the-scope-guard-guarantees)). |
 | Engine files trip the scope check | Files the engine writes on its own (Godot `.uid` and `.import` files, caches) can be listed as generated; outside a module's scope they are dropped instead of failing the module. |
 | Changes are hard to trace or undo | Each accepted module is one commit on a dedicated run branch, `multiagent-runs/<run-id>`. Your main branch is never touched. |
 | Agents work from stale or invisible state | Planning output must be committed before a run. Every agent is moved to the run branch tip when it starts, so later waves see the modules merged before them. |
@@ -88,8 +89,8 @@ codebase that splits cleanly into modules.
 - **Enforces write scopes.** Before writing anything, each agent must *claim*
   its worktree for its task, which also moves the worktree to the run branch
   tip. After that, the hook only lets it edit its own folder, its test folder
-  and its report files, and it is warned after any shell command that left a
-  file outside them.
+  and its report files, refuses a shell command that would change the main checkout,
+  and warns it after any shell command that left a file outside its scope.
 - **Audits and commits.** When an agent finishes, its reviewer runs the merge:
   the diff is checked against its scope. In-scope work is applied and committed on the run branch, with your
   git hooks still running. Generated files outside the scope are dropped.
@@ -391,11 +392,15 @@ runs after every module is merged.
 - Warns you and asks for confirmation if the module stage did not pass.
 - Starts the `module-pipeline-integrate` workflow. An `integrator` agent works in
   a worktree, limited to `integration.allowed_files` (for example `src/game/`),
-  and can never write inside a module's folder.
+  and nothing it writes inside a module's folder is ever merged.
 - A `system-reviewer` commits the glue (audited like a module), runs
   diagnostics (build and test suite), then checks the whole run branch against
   the spec and returns a spec coverage table (done, partial or missing for each
   requirement) and rework items.
+- The status is computed, not taken from the reviewer's verdict. A feature
+  the review found `partial` or `missing` makes the result `rework_required`
+  even without a blocking item, unless the reviewer marks it `deferred` and
+  names the place that defers it (the spec, or a rework decision you approved).
 - The system reviewer also audits the seams. For every topic of the
   cross-module rules it searches all modules and the glue for the same
   question answered twice or outside the shared layer, and reports one
@@ -693,6 +698,118 @@ requests), see
 | `.multiagent/pipeline/merge/<run>/` | Merge worktree, used only while the main checkout is on another branch | ignored |
 | `.claude/worktrees/` | Agent worktrees, created and removed by Claude Code | ignored |
 
+## What the scope guard guarantees
+
+The guarantee is about what reaches the run branch: **only changes inside a
+task's allowed files are merged.** Three checks stand behind it.
+
+- Before an Edit or Write, a hook refuses a path outside the task's files.
+- Before a shell command, a hook reads its text and refuses it when it shows
+  a write into the main checkout or another agent's worktree: a redirection,
+  a file-changing command (`rm`, `mv`, `cp`, `mkdir`, `touch`, `tee`,
+  `sed -i` and the like) or a mutating git command aimed there, by absolute
+  path, through `..`, or after a `cd`. Reading there is never refused. After
+  a shell command, the agent is told about files it left outside its scope in
+  its worktree.
+- Before merging, the CLI audits the worktree's diff and refuses the whole
+  task if anything is out of scope.
+
+It is not a sandbox, and no hook can be one. A hook sees a command's text
+before it runs, not what the program does: `node build.js` or a path held in
+a variable can write anywhere your user account can, and the text does not
+show it. Reviewers are read-only by instruction, not by enforcement. Such a
+write never gets merged, but it does land on your disk.
+
+What else stands in the way, and what does not (checked on Claude Code
+2.1.284 on Windows with a probe agent in a worktree):
+
+- Claude Code itself refuses a worktree agent's `git -C <main checkout>`.
+  Its documentation says it also refuses Edit and Write there, and git
+  redirected there by `--git-dir` or a `cd`.
+- It does not stop a shell redirection or a script from writing into the main
+  checkout by absolute path; both succeeded in the probe. So did writes to
+  the home and temp folders. This is the gap the hook above narrows.
+- After every stage, `record` lists files left uncommitted in the main
+  checkout while it is on the run branch. No pipeline merge writes those, so
+  they come from a build or test command, an agent's shell, or your own edits.
+
+### Running under the Bash sandbox
+
+Operating-system confinement comes from Claude Code's Bash sandbox, which the
+plugin cannot switch on for you. It runs on macOS, Linux and WSL2, not on
+native Windows. The pipeline works under it in two setups. In both, the
+module stage and the integration stage were run for real on Claude Code
+2.1.286 in WSL2 (three modules, glue, system review); `plan`, `rework` and
+`finish` were not part of those runs.
+
+**Open: protect everything outside the project.** In the project's
+`.claude/settings.json`:
+
+```json
+{
+  "sandbox": {
+    "enabled": true,
+    "allowUnsandboxedCommands": false,
+    "failIfUnavailable": true
+  }
+}
+```
+
+Writes outside the project (the home folder, other repositories, the Windows
+drive) fail with "Read-only file system" for the session and every agent.
+Nothing else changes: plan, run, integrate and finish work as usual. The main
+checkout is the session's working directory, so an agent's shell can still
+write there; the hooks and the merge audit above remain the guard for that.
+
+**Strict: also make the main checkout's sources read-only.** Add the paths to
+protect:
+
+```json
+{
+  "sandbox": {
+    "enabled": true,
+    "allowUnsandboxedCommands": false,
+    "failIfUnavailable": true,
+    "filesystem": {
+      "denyWrite": ["./src", "./tests", "./docs", "./tasks", "./work", "./package.json"]
+    }
+  }
+}
+```
+
+- The listed paths are read-only to every shell, while agents keep writing in
+  their own worktrees under `.claude/worktrees/`. Do not list the project
+  root itself: that makes the worktrees read-only too, and `allowWrite` does
+  not re-open them. A new file directly in the project root can still be
+  created.
+- Keep the main checkout on another branch (`main`, say) for `run` and
+  `integrate`. The pipeline then reads the manifest, the prompts and the
+  rules from the run branch, merges in its own worktree under
+  `.multiagent/`, and never writes the main checkout. If it is on the run
+  branch, `prepare` stops and says so.
+- `plan`, `rework` and `finish` change files in the main checkout, and so
+  does switching branches. Do the switching, and the final merge, from your
+  own terminal.
+
+What to expect in either setup:
+
+- Inside the sandbox, the working directory shows device-node placeholders
+  for protected paths (`.mcp.json`, `.claude/commands`, `.bashrc` and
+  others). The pipeline ignores them; an agent's `git add -A` does not, so
+  agents are told to name the paths they add or not to commit at all.
+- Every sandboxed command has its own process namespace. The pipeline lock
+  therefore tells a live holder by its heartbeat, not by its process id.
+- Git cannot finish removing an agent's worktree from inside the sandbox;
+  `git worktree list` shows such entries as prunable. Run
+  `git worktree prune` from your own terminal now and then.
+- Diagnostics run inside the sandbox too. A test or build command that needs
+  the network or writes outside the project needs the matching sandbox
+  settings.
+- For an unattended run (`claude -p "/module-pipeline:run"`) allow the tools
+  on the command line, `--allowedTools Bash Read Edit Write Glob Grep Agent
+  Workflow Skill`, or trust the project first; otherwise the workflow stops
+  at its review prompt.
+
 ## Tips for good results
 
 - **Specs decide quality.** Concrete rules and acceptance criteria give
@@ -798,11 +915,11 @@ plugins/module-pipeline/
   skills/                              the seven /module-pipeline:* commands
   agents/                              implementer, integrator, patcher, module and system reviewers
   workflows/                           implement-modules.js, integrate-system.js, patch-run.js
-  hooks/hooks.json                     PreToolUse scope guard, PostToolUse shell check
+  hooks/hooks.json                     PreToolUse scope guard (writes and shell), PostToolUse shell check
   scripts/pipeline.mjs                 CLI: validate, commit-planning, prepare, claim,
                                        integrate-task, diagnostics, record, status, clean, finish
   scripts/scope-hook.mjs               both hooks
-  scripts/lib/                         manifest, scope, git, state, diagnostics, report
+  scripts/lib/                         manifest, scope, shell, git, state, diagnostics, report
   test/                                node:test suites and a workflow harness
 ```
 

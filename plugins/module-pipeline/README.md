@@ -39,10 +39,24 @@ A Claude Code plugin that runs a spec-driven, multi-agent build:
 - **Write scopes are enforced while agents work.** A `PreToolUse` hook blocks
   Edit/Write/MultiEdit/NotebookEdit by pipeline agents outside their task's
   allowed files, and blocks every write until the agent has claimed its
-  worktree. A `PostToolUse` hook checks the worktree after every shell command
-  and tells the agent about out-of-scope files so it can undo them. Whatever is
-  still out of scope at merge time is caught by the audit: the module is not
-  merged and its worktree is kept.
+  worktree. It also refuses a shell command whose text shows a write into
+  the main checkout (reading there is never refused). A
+  `PostToolUse` hook checks the worktree after every shell command and tells
+  the agent about out-of-scope files so it can undo them. Whatever is still
+  out of scope at merge time is caught by the audit: the module is not merged
+  and its worktree is kept.
+- **A merge gate, not a sandbox.** The guarantee is that only in-scope
+  changes reach the run branch. A shell command can still write outside the
+  agent's worktree in a way its text does not show (a script, a path in a
+  variable); that write is never merged, but it lands on disk. `record` lists files left uncommitted
+  in the main checkout after each stage. Confining an agent's shell takes
+  Claude Code's Bash sandbox (macOS, Linux and WSL2; not native Windows).
+- **Works under the Bash sandbox.** With `sandbox.enabled` the pipeline runs
+  as usual and nothing outside the project can be written. With
+  `sandbox.filesystem.denyWrite` on the main checkout's sources as well, run
+  and integrate with the main checkout on another branch: the pipeline reads
+  its planning output from the run branch and merges in its own worktree.
+  The top-level README has both setups.
 - **Generated files do not fail modules.** Files matching `generated_files`
   (such as Godot `.uid` and `.import` files) are dropped when they land outside
   a task's scope, and merged normally inside it.
@@ -161,7 +175,7 @@ its own.
 
 ### Hooks it installs
 
-Both hooks run `node "${CLAUDE_PLUGIN_ROOT}/scripts/scope-hook.mjs"` and act
+The hooks run `node "${CLAUDE_PLUGIN_ROOT}/scripts/scope-hook.mjs"` and act
 only on this plugin's own `module-implementer`, `integrator` and `patcher` agents. For
 every other session and agent they exit immediately and change nothing.
 
@@ -169,6 +183,11 @@ every other session and agent they exit immediately and change nothing.
   agent's claim file in `.multiagent/pipeline/claims/` and denies a write
   outside the files its task may change, or any write before the agent has
   claimed its worktree.
+- **`PreToolUse` on Bash**: parses the command text and denies it when it
+  shows a write into the main checkout or another agent's worktree (a
+  redirection, a file-changing command, a mutating git command). It reads
+  the hook input and the worktree's `.git` file, and resolves paths; it runs
+  nothing.
 - **`PostToolUse` on Bash**: runs `git diff --name-only` and
   `git ls-files --others` in the agent's worktree and tells the agent about
   files it left outside its scope. It never blocks or changes the command.

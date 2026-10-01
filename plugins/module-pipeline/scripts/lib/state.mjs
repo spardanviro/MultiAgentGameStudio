@@ -6,10 +6,17 @@
 //   lock                   serializes merges into the project
 import crypto from 'node:crypto';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
+import { Worker } from 'node:worker_threads';
 import { canonicalPath, pathKey } from './paths.mjs';
 
 const LOCK_WAIT_MS = 120000;
+// A holder touches its lock this often while it works...
+const LOCK_BEAT_MS = 2000;
+// ...so a lock nobody touched for this long has lost its holder.
+const LOCK_SILENT_MS = 30 * 1000;
+// For a lock without a heartbeat (written by an old version, or unreadable).
 const LOCK_STALE_MS = 10 * 60 * 1000;
 const LOCK_POLL_MS = 100;
 
@@ -158,33 +165,155 @@ function sleepSync(ms) {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
-/** Run fn while holding the project's pipeline lock (merges touch one index). */
-export function withLock(root, fn) {
+/**
+ * The process-id namespace this process runs in, or null where there is no
+ * such thing. Claude Code's Bash sandbox on Linux gives every command its own
+ * namespace, so one pipeline command cannot see the process of another.
+ */
+export function pidNamespace() {
+  try {
+    return fs.readlinkSync('/proc/self/ns/pid');
+  } catch {
+    return null;
+  }
+}
+
+/** Who holds the lock file, or null when it is gone. Old versions wrote only the pid. */
+function readLock(lockPath) {
+  let text;
+  let ageMs;
+  try {
+    text = fs.readFileSync(lockPath, 'utf8');
+    ageMs = Date.now() - fs.statSync(lockPath).mtimeMs;
+  } catch (error) {
+    if (error.code === 'ENOENT') {
+      return null;
+    }
+    throw error;
+  }
+  let holder = {};
+  try {
+    const parsed = JSON.parse(text);
+    holder = typeof parsed === 'number' ? { pid: parsed } : parsed || {};
+  } catch {
+    holder = {};
+  }
+  return {
+    pid: Number.isInteger(holder.pid) ? holder.pid : null,
+    host: holder.host || os.hostname(),
+    pidns: holder.pidns ?? null,
+    beats: holder.beats === true,
+    token: holder.token || text,
+    ageMs, // time since the file was written or its holder last touched it
+  };
+}
+
+function processIsAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    // EPERM: the process exists but belongs to someone else.
+    return error.code === 'EPERM';
+  }
+}
+
+/**
+ * A lock is stale when its holder is gone. How long it has been held says
+ * nothing: a merge commit runs the project's git hooks, which may build or
+ * test for longer than any fixed limit.
+ *
+ * - A holder this process can see (same machine, same pid namespace) is asked
+ *   directly: alive keeps the lock, gone frees it at once.
+ * - A holder it cannot see (another sandbox or machine) is judged by its
+ *   heartbeat: the holder touches the file every few seconds while it works,
+ *   so a file left untouched for LOCK_SILENT_MS has no holder any more.
+ * - A lock without a heartbeat (an old version, an unreadable file) falls
+ *   back to its age.
+ */
+function lockIsStale(lock) {
+  if (lock.pid !== null && lock.host === os.hostname() && lock.pidns === pidNamespace()) {
+    return !processIsAlive(lock.pid);
+  }
+  return lock.ageMs > (lock.beats ? LOCK_SILENT_MS : LOCK_STALE_MS);
+}
+
+const HEARTBEAT = `
+const { workerData } = require('node:worker_threads');
+const fs = require('node:fs');
+setInterval(() => {
+  try {
+    if (JSON.parse(fs.readFileSync(workerData.lockPath, 'utf8')).token === workerData.token) {
+      const now = new Date();
+      fs.utimesSync(workerData.lockPath, now, now);
+    }
+  } catch {}
+}, workerData.beatMs);
+`;
+
+/**
+ * Touches the lock file every beatMs from another thread, because the thread
+ * that holds the lock is busy in synchronous git calls. Null when threads are
+ * not available; the lock then says it has no heartbeat.
+ */
+function startHeartbeat(lockPath, token, beatMs) {
+  try {
+    const worker = new Worker(HEARTBEAT, { eval: true, workerData: { lockPath, token, beatMs } });
+    worker.on('error', () => {});
+    worker.unref();
+    return worker;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Run fn while holding the project's pipeline lock (merges touch one index).
+ * @param {{waitMs?: number, beatMs?: number}} [options] how long to wait for another holder; how often to touch the lock
+ */
+export function withLock(root, fn, { waitMs = LOCK_WAIT_MS, beatMs = LOCK_BEAT_MS } = {}) {
   const lockPath = path.join(pipelineDir(root), 'lock');
   fs.mkdirSync(path.dirname(lockPath), { recursive: true });
-  const deadline = Date.now() + LOCK_WAIT_MS;
-  for (;;) {
-    try {
-      fs.writeFileSync(lockPath, String(process.pid), { flag: 'wx' });
-      break;
-    } catch (error) {
-      if (error.code !== 'EEXIST') {
-        throw error;
-      }
-      const age = Date.now() - fs.statSync(lockPath).mtimeMs;
-      if (age > LOCK_STALE_MS) {
-        fs.rmSync(lockPath, { force: true });
-        continue;
-      }
-      if (Date.now() > deadline) {
-        throw new Error(`Timed out waiting for ${lockPath}`);
-      }
-      sleepSync(LOCK_POLL_MS);
-    }
-  }
+  const token = `${process.pid}-${crypto.randomUUID()}`;
+  const heartbeat = startHeartbeat(lockPath, token, beatMs);
+  const holder = { pid: process.pid, host: os.hostname(), pidns: pidNamespace(), beats: Boolean(heartbeat), token, startedAt: new Date().toISOString() };
+  const deadline = Date.now() + waitMs;
   try {
-    return fn();
+    for (;;) {
+      try {
+        fs.writeFileSync(lockPath, JSON.stringify(holder), { flag: 'wx' });
+        break;
+      } catch (error) {
+        if (error.code !== 'EEXIST') {
+          throw error;
+        }
+        const lock = readLock(lockPath);
+        if (!lock) {
+          continue;
+        }
+        // Remove a stale lock only if it is still the one that was judged stale.
+        if (lockIsStale(lock) && readLock(lockPath)?.token === lock.token) {
+          fs.rmSync(lockPath, { force: true });
+          continue;
+        }
+        if (Date.now() > deadline) {
+          throw new Error(
+            `Timed out after ${Math.round(waitMs / 1000)} s waiting for ${lockPath}, held by process ${lock.pid ?? 'unknown'} on ${lock.host} ` +
+              `and last touched ${Math.round(lock.ageMs / 1000)} s ago. If no pipeline command is still running, delete that file and retry.`,
+          );
+        }
+        sleepSync(LOCK_POLL_MS);
+      }
+    }
+    try {
+      return fn();
+    } finally {
+      // Release only our own lock: after a takeover the file belongs to someone else.
+      if (readLock(lockPath)?.token === token) {
+        fs.rmSync(lockPath, { force: true });
+      }
+    }
   } finally {
-    fs.rmSync(lockPath, { force: true });
+    heartbeat?.terminate();
   }
 }

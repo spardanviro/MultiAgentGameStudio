@@ -108,6 +108,11 @@ const SYSTEM_REVIEW_SCHEMA = {
           feature: { type: 'string' },
           status: { type: 'string', enum: ['done', 'partial', 'missing'] },
           owner: { type: 'string' },
+          deferred: {
+            type: 'boolean',
+            description: 'true only for a partial or missing feature that the spec itself or a rework decision (reports/rework/) puts off; say where in note',
+          },
+          note: { type: 'string', description: 'What is missing, or where the deferral is written' },
         },
       },
     },
@@ -157,7 +162,7 @@ const steps = [
   `Run the project's compile and test commands on the run branch:
    ${CLI} diagnostics --run ${runId}
    Put its \`failed\` field and a one or two line summary into \`diagnostics\`; its log file has the full output.`,
-  `Review the integrated result on branch ${runBranch} against the spec${spec ? ` (${spec})` : ''}. Your working directory may be on another branch; read files with \`git show ${runBranch}:<path>\`. The manifest (${manifest}) lists every module, its folder and its report.`,
+  `Review the integrated result on branch ${runBranch} against the spec${spec ? ` (${spec})` : ''}. Your working directory may be on another branch; read files with \`git show ${runBranch}:<path>\`. The manifest (${manifest}) lists every module, its folder and its report. List every feature of the spec in \`spec_coverage\`. A \`partial\` or \`missing\` feature blocks the run, so write a rework item for it; mark it \`deferred\` only when the spec or a decision under reports/rework/ puts it off, and say where in \`note\`.`,
   rules
     ? `Audit the seams against ${rules}. For every topic heading in it, search all module folders and the glue (\`git grep <pattern> ${runBranch}\`) for code or tests that sidestep the rule, and run a short end-to-end check where one settles it. Put one entry per topic into \`rule_checks\`, and write a rework item with \`blocks_release: true\` for every violation.`
     : null,
@@ -186,13 +191,17 @@ const blockingItems = (review ? review.rework_items || [] : []).filter((item) =>
 // A broken cross-module rule blocks the run even when the reviewer wrote no
 // blocking item for it: such defects sit between modules and spread.
 const ruleViolations = (review ? review.rule_checks || [] : []).filter((check) => check.status === 'violated')
+// The gate is computed, not taken from the reviewer's verdict: a feature the
+// review found partial or missing blocks the run whether or not a blocking
+// item was written for it, unless it is deferred on record.
+const coverageGaps = (review ? review.spec_coverage || [] : []).filter((row) => row.status !== 'done' && row.deferred !== true)
 // 'empty' means the existing glue already fits (common in rework runs).
 const integrationFailed = !merge || (merge.status !== 'merged' && merge.status !== 'empty' && merge.status !== 'already_merged')
 const status = !review
   ? 'review_missing'
   : integrationFailed
     ? 'integration_failed'
-    : blockingItems.length || ruleViolations.length
+    : blockingItems.length || ruleViolations.length || coverageGaps.length
       ? 'rework_required'
       : !diagnostics || diagnostics.failed
         ? 'diagnostics_failed'
@@ -211,5 +220,6 @@ return {
     : null,
   blockingItems,
   ruleViolations,
+  coverageGaps,
   next: status === 'passed' ? 'merge_run_branch' : 'rework',
 }

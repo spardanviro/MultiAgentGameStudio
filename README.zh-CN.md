@@ -29,6 +29,7 @@ git 提交，每个阶段都有审查把关，失败的部分会进入有计划�
 - [返工循环](#返工循环)
 - [收尾：合并运行分支](#收尾合并运行分支)
 - [插件会写哪些文件](#插件会写哪些文件)
+- [写入范围守卫保证什么](#写入范围守卫保证什么)
 - [提高效果的建议](#提高效果的建议)
 - [常见问题](#常见问题)
 - [仓库结构与开发](#仓库结构与开发)
@@ -45,7 +46,7 @@ module-pipeline 把这些都变成由工具强制执行的规则，而不是只�
 | 问题 | 插件的做法 |
 | --- | --- |
 | 智能体互相覆盖代码 | 每个模块只拥有一个文件夹。两个模块拥有相同或嵌套的文件夹时，manifest 校验直接失败。 |
-| 智能体越界修改 | `PreToolUse` hook 在智能体**工作过程中**拦截它对允许范围之外文件的编辑。每条 shell 命令执行后，只要留下了越界文件，智能体会立刻收到提醒；合并前的审计会拒绝仍然存在的越界文件。 |
+| 智能体越界修改 | `PreToolUse` hook 在智能体**工作过程中**拦截它对允许范围之外文件的编辑，并拒绝文本里能看出要写主工作区的 shell 命令。每条 shell 命令执行后，只要留下了越界文件，智能体会立刻收到提醒；合并前的审计会拒绝仍然存在的越界文件。这保证的是“什么能被合并”，不是沙箱（见[写入范围守卫保证什么](#写入范围守卫保证什么)）。 |
 | 引擎自动生成的文件触发越界 | 引擎自己写出的文件（Godot 的 `.uid`、`.import` 文件、各种缓存）可以登记为生成文件；它们出现在模块范围之外时会被丢弃，而不是让整个模块失败。 |
 | 改动难以追溯和撤销 | 每个通过的模块是专用运行分支 `multiagent-runs/<run-id>` 上的一个提交，你的主分支不会被动到。 |
 | 智能体基于过期或看不到的状态工作 | 运行前必须先提交规划产物。每个智能体开始时都会被移到运行分支的最新提交，所以后面批次的模块能看到之前已合并的模块。 |
@@ -70,8 +71,8 @@ module-pipeline 把这些都变成由工具强制执行的规则，而不是只�
 - **并行实现模块。** 一个 Claude Code 动态工作流（dynamic workflow）为每个模块启动一个智能体，各自在独立的
   git worktree 里工作。模块按依赖关系分**批次**（wave）运行：一个模块要等它依赖的模块都合并后才开始。
 - **强制限定写入范围。** 每个智能体写任何东西之前，必须先为自己的任务**认领**（claim）所在的 worktree，
-  认领时 worktree 会被移到运行分支的最新提交。之后 hook 只允许它编辑自己的文件夹、测试文件夹和报告文件；
-  任何 shell 命令留下了越界文件，它都会立刻收到提醒。
+  认领时 worktree 会被移到运行分支的最新提交。之后 hook 只允许它编辑自己的文件夹、测试文件夹和报告文件，
+  拒绝会改动主工作区的 shell 命令；任何 shell 命令留下了越界文件，它都会立刻收到提醒。
 - **审计并提交。** 智能体完成后，由它的审查者执行合并：改动按写入范围逐一核对。范围内的改动被应用并提交到运行分支（你项目
   的 git hooks 照常运行）；范围外的生成文件被丢弃；其他越界改动被拒绝，worktree 保留下来供你检查。
 - **审查每个模块。** 只读审查者检查验收标准、接口契约、测试和明显的缺陷，返回结构化的返工项，每项都带严重
@@ -303,9 +304,11 @@ flowchart TD
 
 - 如果模块阶段没有通过，会先提醒你并请你确认是否继续。
 - 启动 `module-pipeline-integrate` 工作流。`integrator` 智能体在 worktree 里工作，只能写
-  `integration.allowed_files`（例如 `src/game/`），永远不能写进任何模块的文件夹。
+  `integration.allowed_files`（例如 `src/game/`），它写进模块文件夹的任何东西都不会被合并。
 - `system-reviewer` 先提交胶水代码（和模块一样经过审计），再运行诊断（构建和测试套件），然后对照需求文档
   检查整个运行分支，返回一张需求覆盖表（每条需求标为 done、partial 或 missing），以及返工项。
+- 状态是算出来的，不是照搬审查者的结论。只要有需求被标为 `partial` 或 `missing`，即使没有阻塞项，结果也是
+  `rework_required`；除非审查者把它标为 `deferred`，并写明是哪里决定暂缓的（需求文档本身，或你批准过的返工决定）。
 - 系统审查者还要核对模块之间的接缝：对跨模块规则的每个主题，在所有模块和胶水代码里查找同一个问题被回答了
   两次、或者没有通过共享层来做的地方，每个主题给出一条 `rule_checks`（`followed`、`violated` 或
   `not_applicable`，附证据）。只要有一条规则被违反，结果就是 `rework_required`。
@@ -555,6 +558,88 @@ git switch main && git merge --no-ff multiagent-runs/run-001-r1
 | `.multiagent/pipeline/merge/<run>/` | 合并用的 worktree，只在主工作区位于其他分支时使用 | 忽略 |
 | `.claude/worktrees/` | 智能体的 worktree，由 Claude Code 创建和删除 | 忽略 |
 
+## 写入范围守卫保证什么
+
+它保证的是什么能进入运行分支：**只有任务允许范围内的改动会被合并。** 背后有三道检查：
+
+- Edit 或 Write 之前，hook 拒绝范围外的路径。
+- shell 命令执行之前，hook 读取命令文本，只要能看出它要写主工作区或别的智能体的 worktree 就拒绝：重定向、
+  改文件的命令（`rm`、`mv`、`cp`、`mkdir`、`touch`、`tee`、`sed -i` 等），或指向那里的会改动仓库的 git 命令；
+  不管是用绝对路径、用 `..`，还是先 `cd` 过去。只读操作从不拒绝。执行之后，如果在自己的 worktree 里留下了
+  越界文件，智能体会收到提醒。
+- 合并之前，命令行脚本审计 worktree 的改动，只要有越界内容就拒绝整个任务。
+
+它不是沙箱，任何 hook 都做不成沙箱。hook 看到的是命令执行前的文本，看不到程序实际做了什么：`node build.js`
+或者放在变量里的路径，可以写到你的账户能写的任何地方，而文本里看不出来。审查者的“只读”也只是指令要求，
+没有强制手段。这类写入不会被合并，但会落在你的磁盘上。
+
+还有哪些东西在拦、哪些没在拦（在 Windows 上的 Claude Code 2.1.284 里，用一个运行在 worktree 中的探测智能体
+实测）：
+
+- Claude Code 自己会拒绝 worktree 智能体执行 `git -C <主工作区>`。它的文档说，对主工作区的 Edit、Write，以及
+  用 `--git-dir` 或 `cd` 把 git 指向主工作区，也会被拒绝。
+- 它不拦 shell 重定向或脚本用绝对路径写进主工作区，实测两种都写成功了；写用户主目录和临时目录也成功了。
+  上面的 hook 缩小的就是这个缺口。
+- 每个阶段结束后，`record` 会列出主工作区（位于运行分支时）里未提交的文件。流水线的合并不会留下这类文件，
+  所以它们来自构建或测试命令、某个智能体的 shell，或你自己的修改。
+
+### 在 Bash 沙箱下运行
+
+操作系统级的限制要靠 Claude Code 的 Bash 沙箱，插件无法替你打开它。沙箱支持 macOS、Linux 和 WSL2，不支持
+原生 Windows。流水线在沙箱下有两种用法。两种用法下，模块阶段和集成阶段都在 WSL2 里的 Claude Code 2.1.286 上
+真实跑过（三个模块、胶水代码、系统审查）；`plan`、`rework`、`finish` 没有包含在这些测试里。
+
+**开放模式：保护项目之外的一切。** 在项目的 `.claude/settings.json` 里写：
+
+```json
+{
+  "sandbox": {
+    "enabled": true,
+    "allowUnsandboxedCommands": false,
+    "failIfUnavailable": true
+  }
+}
+```
+
+往项目之外写（用户主目录、别的仓库、Windows 盘）会失败，报“Read-only file system”，主会话和所有智能体都
+一样。其他都不变：规划、运行、集成、收尾照常进行。主工作区就是会话的工作目录，所以智能体的 shell 仍然能写
+它；这部分还是靠上面的 hook 和合并前的审计来把关。
+
+**严格模式：再把主工作区的源码设为只读。** 加上要保护的路径：
+
+```json
+{
+  "sandbox": {
+    "enabled": true,
+    "allowUnsandboxedCommands": false,
+    "failIfUnavailable": true,
+    "filesystem": {
+      "denyWrite": ["./src", "./tests", "./docs", "./tasks", "./work", "./package.json"]
+    }
+  }
+}
+```
+
+- 列出的路径对所有 shell 都是只读的，智能体仍然能写自己在 `.claude/worktrees/` 下的 worktree。不要把项目
+  根目录本身列进去：那样 worktree 也会变成只读，`allowWrite` 也放不开。直接在项目根目录下新建文件仍然拦不住。
+- 执行 `run` 和 `integrate` 时，主工作区要留在别的分支上（比如 `main`）。流水线会从运行分支读取清单、
+  提示词和规则，在自己位于 `.multiagent/` 下的 worktree 里合并，完全不写主工作区。如果主工作区在运行分支上，
+  `prepare` 会停下来并说明原因。
+- `plan`、`rework`、`finish` 要改主工作区里的文件，切换分支也一样。切换分支和最后的合并请在你自己的终端里做。
+
+两种模式下都会遇到的情况：
+
+- 在沙箱里，工作目录下会出现一批设备节点占位条目（`.mcp.json`、`.claude/commands`、`.bashrc` 等），对应被保护
+  的路径。流水线会忽略它们；但智能体执行 `git add -A` 会失败，所以认领任务时会提示它们按路径添加，或者干脆
+  不提交。
+- 每条沙箱命令都有自己的进程空间，互相看不到进程。所以流水线的锁靠心跳判断持有者是否还在，而不是靠进程号。
+- 在沙箱里 git 无法把智能体的 worktree 彻底删干净，`git worktree list` 会把这些条目标为 prunable。偶尔在你
+  自己的终端里执行一次 `git worktree prune` 即可。
+- 诊断命令也在沙箱里执行。需要联网或要写项目之外位置的测试、构建命令，要配置相应的沙箱设置。
+- 无人值守运行（`claude -p "/module-pipeline:run"`）时，要在命令行上允许工具：
+  `--allowedTools Bash Read Edit Write Glob Grep Agent Workflow Skill`，或者先信任这个项目；否则工作流会停在
+  审批提示上。
+
 ## 提高效果的建议
 
 - **需求文档决定质量。** 具体的规则和验收标准让审查者有据可查；含糊的需求只会得到含糊的模块。
@@ -623,11 +708,11 @@ plugins/module-pipeline/
   skills/                              七个 /module-pipeline:* 命令
   agents/                              实现者、集成者、补丁智能体、模块审查者、系统审查者
   workflows/                           implement-modules.js、integrate-system.js、patch-run.js
-  hooks/hooks.json                     PreToolUse 写入范围守卫、PostToolUse shell 检查
+  hooks/hooks.json                     PreToolUse 写入范围守卫（写文件和 shell）、PostToolUse shell 检查
   scripts/pipeline.mjs                 CLI：validate、commit-planning、prepare、claim、
                                        integrate-task、diagnostics、record、status、clean、finish
   scripts/scope-hook.mjs               两个 hook 的实现
-  scripts/lib/                         manifest、scope、git、state、diagnostics、report
+  scripts/lib/                         manifest、scope、shell、git、state、diagnostics、report
   test/                                node:test 测试和 workflow 模拟器
 ```
 

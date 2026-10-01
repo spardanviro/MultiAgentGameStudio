@@ -20,8 +20,10 @@ Read source when a claim needs checking, not by default.
 
 ## What to check
 
-- Every feature in the spec: present, partial or missing, and which module
-  or the integration layer owns it.
+- Every feature in the spec: done, partial or missing, and which module or
+  the integration layer owns it. A partial or missing feature blocks the
+  run: write a rework item for it. Mark it `deferred` only when the spec or
+  a decision under reports/rework/ puts it off.
 - Execution order and data flow; hidden coupling; modules that reach into
   each other instead of using contracts.
 - The seams, against the cross-module rules file your task names. Module

@@ -827,7 +827,23 @@ What to expect in either setup:
 - A push from inside the sandbox needs the remote's host allowed, for GitHub
   `"network": { "allowedDomains": ["github.com"] }` in the `sandbox`
   settings; in an unattended run nothing can ask you, and the connection is
-  refused.
+  refused. The sandbox also keeps `.git/config` read-only, so `git push -u`
+  publishes the branch but cannot record the upstream; `finish` gives you
+  the `git branch --set-upstream-to` command for your own terminal. A remote
+  served from the same machine is refused unless the machine's own address
+  is in `allowedDomains` too; on Linux and WSL2 `localhost` is not reachable
+  from the sandbox at all.
+- Signing in to the remote from inside the sandbox has to use credentials
+  kept on the Linux side (an SSH key, `gh auth login`, git's `store`
+  helper): the sandbox can read those. On WSL2 the Windows Git Credential
+  Manager cannot be started from the sandbox, so with that setup the push
+  stops at "could not read Password" and `finish` hands you the push command.
+  Over SSH the sandbox tunnels through its own proxy (it needs `socat`); it
+  cannot add a host key to `~/.ssh/known_hosts`, so connect to the host once
+  from your own terminal first. If your machine reaches the network through
+  a proxy that refuses port 22, SSH works outside the sandbox and fails
+  inside it: use an HTTPS remote, or start Claude Code with the git host in
+  `NO_PROXY`.
 - Diagnostics run inside the sandbox too. A test or build command that needs
   the network or writes outside the project needs the matching sandbox
   settings.

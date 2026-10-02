@@ -655,6 +655,15 @@ git switch main && git merge --no-ff multiagent-runs/run-001-r1
   这样的真实文件也一并隐藏。
 - 从沙箱里推送，需要允许远程仓库的主机：GitHub 是在 `sandbox` 设置里加
   `"network": { "allowedDomains": ["github.com"] }`；无人值守运行时没有人可以询问，连接会被直接拒绝。
+  沙箱还把 `.git/config` 设为只读，所以 `git push -u` 能把分支推上去，但记不下上游分支；`finish` 会给出
+  `git branch --set-upstream-to` 命令，由你在自己的终端里执行。远程仓库如果就架在本机，还要把本机自己的
+  地址也加进 `allowedDomains`，否则会被拒绝；在 Linux 和 WSL2 上，沙箱里根本连不上 `localhost`。
+- 在沙箱里登录远程仓库，要用放在 Linux 一侧的凭据（SSH 密钥、`gh auth login`、git 的 `store` 助手），这些
+  沙箱里读得到。在 WSL2 上，沙箱里启动不了 Windows 的 Git Credential Manager，用它的话推送会停在
+  “could not read Password”，`finish` 会把推送命令交给你。走 SSH 时，沙箱通过自己的代理建立隧道（需要
+  `socat`）；它没法往 `~/.ssh/known_hosts` 里添加主机密钥，所以要先在自己的终端里连一次那台主机。如果你的
+  机器通过一个不放行 22 端口的代理上网，SSH 在沙箱外能用、在沙箱里不能用：改用 HTTPS 远程，或者启动
+  Claude Code 时把 git 主机加进 `NO_PROXY`。
 - 诊断命令也在沙箱里执行。需要联网或要写项目之外位置的测试、构建命令，要配置相应的沙箱设置。
 - 无人值守运行（`claude -p "/module-pipeline:run"`）时，要在命令行上允许工具：
   `--allowedTools Bash Read Edit Write Glob Grep Agent Workflow Skill`，或者先信任这个项目；否则工作流会停在

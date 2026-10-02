@@ -33,6 +33,19 @@ test('manifest rules: folder overlap, intrusion, cycles, unknown deps', () => {
   assert.throws(() => parse(DEFAULT_MANIFEST.replace('id: enemy', 'id: integration')), /reserved/);
 });
 
+test('an acceptance line YAML reads as a mapping is refused, with the way to fix it', () => {
+  const withCriteria = (criteria) => DEFAULT_MANIFEST.replace('    acceptance: [Player moves]\n', `    acceptance:${criteria}\n`);
+  const list = (lines) => lines.map((line) => `\n      - ${line}`).join('');
+
+  assert.throws(
+    () => parse(withCriteria(list(['Health never drops below 0', 'The label shows "health: 85" after a hit']))),
+    /player\.acceptance\[1\] is not text: YAML read it as \{"The label shows \\"health":"85\\" after a hit"\}\. Put the whole line in quotes/,
+  );
+  const quoted = parse(withCriteria(list([`'The label shows "health: 85" after a hit'`, '42'])));
+  assert.deepEqual(quoted.tasks.find((task) => task.id === 'player').acceptance, ['The label shows "health: 85" after a hit', '42']);
+  assert.throws(() => parse(withCriteria(' Health never drops below 0')), /player\.acceptance must be a list of text lines/);
+});
+
 test('module defaults: report and request paths join allowed_files', () => {
   const manifest = parse(DEFAULT_MANIFEST);
   const player = manifest.tasks[0];

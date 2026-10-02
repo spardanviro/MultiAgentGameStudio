@@ -3,6 +3,56 @@
 All notable changes to the module-pipeline plugin. Versions follow
 `plugins/module-pipeline/.claude-plugin/plugin.json`.
 
+## 0.9.2 - 2026-10-02
+
+The sandbox cases 0.9.1 left untested were run for real (WSL2, Claude Code
+2.1.286), on a project that tracks `.vscode/settings.json` and `.mcp.json`
+and pushes to a git server over HTTP:
+
+- `finish`, push option, with the project writable and with its sources
+  denied for writing: the run branch reached the remote both times.
+- The patch path of `rework` and `run`, and `clean --branches`, with the
+  sources denied for writing.
+- `prepare` and `finish` on a project that tracks editor and MCP
+  configuration: the run starts, and `finish` reports no `readOnly` when the
+  run did not touch those files.
+
+Against GitHub itself, on a private scratch repository, all from inside
+the sandbox through `finish`:
+
+- The run branch was pushed over HTTPS, signed in through the GitHub CLI's
+  stored login (`gh auth git-credential`), and `gh pr create` opened the
+  pull request.
+- A further commit was pushed over SSH with a deploy key.
+- With the Windows Git Credential Manager as the helper (the usual WSL
+  setup), the sandbox cannot start it and a push stops at "could not read
+  Password"; outside the sandbox the same push signs in.
+
+### Fixed
+
+- An acceptance line with `: ` in it and no quotes is a mapping to YAML.
+  `validate` accepted it and the agents were handed `[object Object]` in
+  place of the criterion; in the test run three of ten criteria were lost
+  this way. The manifest is now refused, naming the entry and saying to
+  quote the line. The schema shows a quoted example.
+- The sandbox keeps `.git/config` read-only, so `git push -u` publishes the
+  branch and then fails at recording the upstream. The finish skill now
+  says to check that the branch arrived instead of pushing again, to hand
+  the user the `git branch --set-upstream-to` command, and not to look for
+  another way to the remote when the connection itself is blocked or the
+  sign-in fails.
+
+### Documentation
+
+- A remote served from the same machine needs the machine's own address in
+  `sandbox.network.allowedDomains` as well as its name; on Linux and WSL2
+  `localhost` is not reachable from the sandbox at all.
+- Signing in from inside the sandbox: Linux-side credentials (SSH key,
+  `gh`, git's `store` helper) are readable there; under WSL2 the Windows
+  Git Credential Manager cannot be started; `~/.ssh/known_hosts` cannot be
+  written; SSH goes through the sandbox's proxy and fails when the
+  machine's own upstream proxy refuses port 22.
+
 ## 0.9.1 - 2026-10-02
 
 `plan`, `rework`, `finish` and `clean` were run for real under the Bash

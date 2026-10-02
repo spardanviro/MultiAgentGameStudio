@@ -68,6 +68,21 @@ Option 3 changes no file in the checkout and can run here; a push from the
 sandbox needs the remote's host allowed in the sandbox's network settings
 (for GitHub: `github.com`, and `api.github.com` for `gh`).
 
+Under the sandbox, with or without `readOnly`, git cannot write
+`.git/config`. `git push -u` then publishes the branch and fails only at
+recording the upstream: check with `git ls-remote origin <runBranch>` that
+the branch arrived instead of pushing again, and give the user
+`git branch --set-upstream-to=origin/<runBranch> <runBranch>` for their own
+terminal. If the push is refused because the connection is blocked, do not
+look for another way to reach the remote: say which host has to be allowed,
+and give the user the push command for their own terminal. Do the same when
+the push fails at signing in ("could not read Username/Password", "Permission
+denied (publickey)", "Host key verification failed"): the sandbox cannot
+start a Windows credential manager from WSL and cannot add a host key to
+`~/.ssh/known_hosts`. Do not retry, and do not go looking for credentials.
+A warning from `gh pr create` about uncommitted changes counts the sandbox's
+placeholder entries; go by `uncommitted` in the summary instead.
+
 ## 3. Afterwards
 
 Once the run is merged, suggest `/module-pipeline:clean <family> --branches`

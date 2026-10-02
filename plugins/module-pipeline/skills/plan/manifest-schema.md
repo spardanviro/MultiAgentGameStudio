@@ -45,9 +45,10 @@ tasks:
     interface_request: work/modules/player-health/interface_request.md  # default shown
     allowed_files: []             # extra files/folders outside the module, rarely needed
     depends_on: []                # module ids whose public API this module uses
-    acceptance:
+    acceptance:                   # text lines; quote a line that contains ": "
       - Taking damage lowers health and emits health_changed(old, new)
       - Health never drops below 0; reaching 0 emits died once
+      - 'The label reads "health: 85" after a 15-point hit'
     effort: xhigh                 # optional: this module's implementer only
 integration:                      # optional glue stage, run by /module-pipeline:integrate
   prompt_file: work/prompts/integration.md

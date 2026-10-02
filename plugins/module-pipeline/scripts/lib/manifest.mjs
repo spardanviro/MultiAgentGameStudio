@@ -155,6 +155,29 @@ function asStringList(value) {
   return Array.isArray(value) ? value.map(String) : [];
 }
 
+/**
+ * Acceptance criteria are sentences, and a sentence with ": " in it is a
+ * mapping to YAML unless it is quoted. Agents would then be handed
+ * "[object Object]" in place of the criterion.
+ */
+function acceptanceList(value, fieldName) {
+  if (value == null) {
+    return [];
+  }
+  if (!Array.isArray(value)) {
+    throw new Error(`${fieldName} must be a list of text lines.`);
+  }
+  return value.map((entry, index) => {
+    if (entry === null || typeof entry === 'object') {
+      throw new Error(
+        `${fieldName}[${index}] is not text: YAML read it as ${JSON.stringify(entry)}. ` +
+          'Put the whole line in quotes (a line with ": " in it is a mapping otherwise).',
+      );
+    }
+    return String(entry);
+  });
+}
+
 function resolveProjectRoot(rawRoot, manifestPath) {
   // Default layout: <root>/tasks/<manifest>.yaml
   return canonicalPath(path.resolve(path.dirname(manifestPath), rawRoot ? String(rawRoot) : '..'));
@@ -210,7 +233,7 @@ function normalizeModuleTask(raw, index, efforts) {
       `${id}.allowed_files entry`,
     ),
     dependsOn: asStringList(raw.depends_on),
-    acceptance: asStringList(raw.acceptance),
+    acceptance: acceptanceList(raw.acceptance, `${id}.acceptance`),
     effort: raw.effort != null ? effortLevel(raw.effort, `${id}.effort`) : efforts.moduleImplementer,
   };
 }
@@ -237,7 +260,7 @@ function normalizeIntegration(raw, runId, efforts) {
     integrationReport: report,
     interfaceRequest,
     allowedFiles: uniqueScopes([report, interfaceRequest, ...extra], 'integration.allowed_files entry'),
-    acceptance: asStringList(raw.acceptance),
+    acceptance: acceptanceList(raw.acceptance, 'integration.acceptance'),
     effort: raw.effort != null ? effortLevel(raw.effort, 'integration.effort') : efforts.integrator,
   };
 }
@@ -271,7 +294,7 @@ function normalizePatch(raw, runId, efforts) {
     patchReport: report,
     interfaceRequest,
     allowedFiles: uniqueScopes([report, interfaceRequest, ...extra], 'patch.allowed_files entry'),
-    acceptance: asStringList(raw.acceptance),
+    acceptance: acceptanceList(raw.acceptance, 'patch.acceptance'),
     maxChangedLines,
     effort: raw.effort != null ? effortLevel(raw.effort, 'patch.effort') : efforts.moduleImplementer,
   };

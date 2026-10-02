@@ -214,6 +214,13 @@ glue. Keep your own reading of the existing code to what planning needs.
    ```
 
    It switches the project to branch `multiagent-runs/<run-id>` and commits
-   everything uncommitted there. Agents start from the last commit, so
-   uncommitted planning output would be invisible to them. Finish by telling
+   every uncommitted project file there. Agents start from the last commit,
+   so uncommitted planning output would be invisible to them. When the
+   validate output has a `sandboxNote`, `git status` also lists entries
+   that are not files (`.bashrc`, `.mcp.json`, `.claude/skills` and more):
+   the Bash sandbox puts them there, and commit-planning skips them. Leave
+   them alone; never add ignore or exclude rules for them. If the
+   commit-planning output has a `readOnlyNote`, pass it on: the user
+   switches the main checkout to another branch in their own terminal
+   before the next step. Finish by telling
    the user the next step is `/module-pipeline:run`.

@@ -150,6 +150,25 @@ test('a patch larger than its line limit is not merged; its worktree is kept for
   assert.equal(cli(root, 'status').json.activeClaims.length, 1, 'the claim and worktree stay for inspection');
 });
 
+test('the patch report the patcher writes does not count toward the line limit', async () => {
+  const { root, manifest } = patchProject(5);
+  const report = Array.from({ length: 30 }, (_, index) => `- note ${index}`).join('\n');
+  const { result } = await runPatch(root, manifest, {
+    patch: ({ write: put }) => {
+      put('src/player/player.gd', 'class_name Player\nconst SPEED = 85\n');
+      put('work/patches/run-001-r1_patch_report.md', `${report}\n`);
+      put('work/patches/run-001-r1_interface_request.md', `${report}\n`);
+      return { summary: 'speed 85', testsRun: 'none', blockers: [] };
+    },
+    review: () => PASS,
+  });
+
+  assert.equal(result.status, 'passed', JSON.stringify(result, null, 2));
+  assert.equal(result.merge.status, 'merged');
+  assert.ok(result.merge.files.includes('work/patches/run-001-r1_patch_report.md'), 'the report is still merged');
+  assert.equal(result.merge.changedLines, 1, 'the merge says how large the fix was');
+});
+
 test('an unresolved item makes the patch run require rework', async () => {
   const { root, manifest } = patchProject();
   const { result } = await runPatch(root, manifest, {

@@ -53,12 +53,24 @@ Offer these, and do only the one the user picks, after an explicit yes:
    confirm the remote first (`git remote -v`).
 4. **Nothing for now.**
 
-Before switching branches, check `git status --porcelain`; if the main
-checkout has uncommitted work, ask the user how to handle it instead of
+Before switching branches, look at `uncommitted` in the summary (it leaves
+out the placeholder entries the Bash sandbox shows in `git status`); if the
+main checkout has uncommitted work, ask the user how to handle it instead of
 switching. If a merge conflicts, stop and show the conflicting files; do not
 resolve conflicts on your own.
 
+If the summary has `readOnly`, this shell cannot write those paths of the
+main checkout (Claude Code's sandbox denies them). Do not run `git switch`
+or `git merge` here for options 1 and 2: git would move the branch and
+report success while leaving the files as they were. Print the exact
+commands for the user to run in their own terminal instead, and stop there.
+Option 3 changes no file in the checkout and can run here; a push from the
+sandbox needs the remote's host allowed in the sandbox's network settings
+(for GitHub: `github.com`, and `api.github.com` for `gh`).
+
 ## 3. Afterwards
 
-Once the run is merged, suggest `/module-pipeline:clean $run --branches` to
-remove the run branches and leftover worktrees.
+Once the run is merged, suggest `/module-pipeline:clean <family> --branches`
+(`family` in the summary: the run id without its `-r<N>` suffix, so the
+branches of the whole chain are covered) to remove the run branches and
+leftover worktrees.

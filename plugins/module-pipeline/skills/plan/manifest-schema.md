@@ -153,7 +153,7 @@ patch:
   acceptance:                     # one line per item
     - Bats move at 85 px/s
     - The first wave spawns one bat every 1.5 s
-  max_changed_lines: 300          # default; added plus deleted lines, tests included
+  max_changed_lines: 300          # default; added plus deleted lines, tests included, the patch report not
   effort: medium                  # optional; default effort.module_implementer
   # patch_report / interface_request default to work/patches/<run>_*.md
 ```

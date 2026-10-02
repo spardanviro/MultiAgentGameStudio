@@ -164,6 +164,26 @@ export function worktreeForBranch(root, branch) {
   return null;
 }
 
+/** Worktree records whose folder is gone; `git worktree prune` removes them where it is allowed to. */
+export function prunableWorktrees(root) {
+  const output = git(root, ['worktree', 'list', '--porcelain'], { allowFail: true }) || '';
+  const prunable = [];
+  let current = null;
+  for (const line of output.split(/\r?\n/)) {
+    if (line.startsWith('worktree ')) {
+      current = line.slice('worktree '.length);
+    } else if (line.startsWith('prunable') && current) {
+      prunable.push(current);
+    }
+  }
+  return prunable;
+}
+
+/** Files that differ between two commits or branches; what a switch from one to the other rewrites. */
+export function filesBetween(root, from, to) {
+  return (git(root, ['diff', '--name-only', from, to], { allowFail: true }) || '').split(/\r?\n/).filter(Boolean);
+}
+
 export function isMainCheckoutOn(root, branch) {
   const holder = worktreeForBranch(root, branch);
   return Boolean(holder && samePath(holder, root));

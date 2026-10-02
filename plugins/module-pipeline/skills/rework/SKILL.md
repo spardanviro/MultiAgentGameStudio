@@ -19,7 +19,12 @@ The next run's planning output is written in the main checkout and must be
 committed on top of run `$run`. If `git branch --show-current` is not
 `multiagent-runs/$run`, ask the user whether to switch to it (they may have
 uncommitted work of their own on the current branch) and only switch with a
-yes; stop otherwise.
+yes; stop otherwise. Run the status command below first: if its output has
+`readOnly`, this shell cannot write the main checkout (Claude Code's sandbox
+denies those paths) and a `git switch` here would move the branch while
+leaving the files as they were. Then ask the user to run
+`git switch multiagent-runs/$run` in their own terminal instead, and go on
+when they say it is done.
 
 - `.multiagent/pipeline/runs/$run-modules-report.md`,
   `$run-integration-report.md` and `$run-patch-report.md` (whichever exist).
@@ -161,4 +166,9 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/pipeline.mjs" validate tasks/task_manifest.<
 Then ask whether to commit this planning output; only with a yes run
 `node "${CLAUDE_PLUGIN_ROOT}/scripts/pipeline.mjs" commit-planning tasks/task_manifest.<next-run-id>.yaml`
 (it creates branch `multiagent-runs/<next-run-id>` from the current run
-branch). The next step is `/module-pipeline:run tasks/task_manifest.<next-run-id>.yaml`.
+branch; under the Bash sandbox it skips the placeholder entries `git status`
+lists, see `sandboxNote` in the validate output, so add no ignore rules for
+them). If its output has a `readOnlyNote`, pass it on to the user: they
+switch the main checkout to another branch in their own terminal before the
+next step. The next step is
+`/module-pipeline:run tasks/task_manifest.<next-run-id>.yaml`.

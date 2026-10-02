@@ -39,9 +39,12 @@ import {
   gitIdentityProblem,
   head,
   hasSandboxPlaceholders,
+  isTrackable,
   isMainCheckoutOn,
   listBranches,
   listUncommitted,
+  filesBetween,
+  prunableWorktrees,
   mergedBranches,
   projectTopLevel,
   removeWorktree,
@@ -293,6 +296,20 @@ function detectBaseBranch(root, requested) {
   throw new Error('Could not find a main branch (main, master, trunk, develop); pass --base <branch>.');
 }
 
+/**
+ * What the planning session must know when it runs inside the Bash sandbox:
+ * left alone, it sees the placeholders in `git status`, expects the commit to
+ * fail on them and hides them with ignore rules that later hide real files.
+ */
+function planningSandboxNote(root) {
+  return hasSandboxPlaceholders(root)
+    ? {
+        sandboxNote:
+          'This shell is sandboxed. The untracked entries `git status` lists that are not files or folders (.bashrc, .mcp.json, .claude/skills, …) are placeholders the sandbox creates, not project content. commit-planning skips them: leave them alone, and add no .gitignore or .git/info/exclude lines for them.',
+      }
+    : {};
+}
+
 // ---- commands -----------------------------------------------------------------
 
 function cmdValidate({ positional }) {
@@ -314,6 +331,7 @@ function cmdValidate({ positional }) {
     generatedFiles: manifest.generatedFiles,
     diagnostics: { compile: manifest.diagnostics.compileCommand, tests: manifest.diagnostics.testCommand },
     estimate: estimateRun(manifest),
+    ...planningSandboxNote(manifest.projectRoot),
   };
 }
 
@@ -329,10 +347,26 @@ function cmdCommitPlanning({ positional }) {
   const branch = ensureRunBranch(root, getRunBranchName(manifest.runId));
   const files = listUncommitted(root);
   if (!files.length) {
-    return { ok: true, committed: false, branch: getRunBranchName(manifest.runId), createdBranch: branch.created };
+    return { ok: true, committed: false, branch: getRunBranchName(manifest.runId), createdBranch: branch.created, ...planningSandboxNote(root) };
   }
   const commit = commitFiles(root, files, `module-pipeline(${manifest.runId}): planning output`);
-  return { ok: true, committed: true, commit, files, branch: getRunBranchName(manifest.runId), createdBranch: branch.created };
+  const readOnly = readOnlyEntries(root, mergeTargets(manifest));
+  return {
+    ok: true,
+    committed: true,
+    commit,
+    files,
+    branch: getRunBranchName(manifest.runId),
+    createdBranch: branch.created,
+    ...planningSandboxNote(root),
+    ...(readOnly.length
+      ? {
+          readOnlyNote:
+            `The main checkout is now on ${getRunBranchName(manifest.runId)}, and this shell cannot write it (${readOnly.slice(0, 6).join(', ')}${readOnly.length > 6 ? ', …' : ''}). ` +
+            'Before /module-pipeline:run, the user has to switch it to another branch from their own terminal (for example `git switch main`); a `git switch` from this shell would leave the files behind.',
+        }
+      : {}),
+  };
 }
 
 /**
@@ -359,20 +393,74 @@ function finishedUnmerged(root, state, task) {
   return Boolean(claim.branch) && git(root, ['cat-file', '-e', `${claim.branch}:${task.moduleReport}`], { allowFail: true }) !== null;
 }
 
-/** Top-level tracked files and folders of the checkout that this process may not write. */
-function readOnlyEntries(root) {
-  const tracked = git(root, ['ls-tree', '--name-only', 'HEAD'], { allowFail: true }) || '';
-  return tracked
-    .split(/\r?\n/)
-    .filter(Boolean)
-    .filter((entry) => {
-      try {
-        fs.accessSync(path.join(root, entry), fs.constants.W_OK);
-        return false;
-      } catch (error) {
-        return error.code === 'EROFS' || error.code === 'EACCES' || error.code === 'EPERM';
+const READ_ONLY_CODES = new Set(['EROFS', 'EACCES', 'EPERM']);
+
+/**
+ * The top-level entries of the checkout under which this process may not
+ * write `paths` (files, folders or scope patterns, relative to the root).
+ * Only the paths that will be written are looked at: the sandbox also keeps
+ * its own list read-only (.vscode, .idea, .mcp.json and more), and a project
+ * that tracks one of those is not read-only for the pipeline. Where the
+ * sandbox denies a path that does not exist yet, it puts a placeholder there
+ * that is neither a file nor a folder; nothing can be created below it.
+ */
+function readOnlyEntries(root, paths) {
+  const blocked = new Set();
+  for (const target of paths) {
+    const segments = [];
+    for (const segment of String(target).split('/').filter(Boolean)) {
+      if (/[*?[]/.test(segment)) {
+        break;
       }
-    });
+      segments.push(segment);
+    }
+    const top = segments[0];
+    if (!top || blocked.has(top)) {
+      continue;
+    }
+    for (let depth = 1; depth <= segments.length; depth += 1) {
+      const rel = segments.slice(0, depth).join('/');
+      if (!isTrackable(root, rel)) {
+        blocked.add(top);
+        break;
+      }
+      try {
+        fs.accessSync(path.join(root, rel), fs.constants.W_OK);
+      } catch (error) {
+        // A file git replaces by removing it, so its own mode says nothing; a read-only mount does.
+        const isFolder = fs.statSync(path.join(root, rel), { throwIfNoEntry: false })?.isDirectory();
+        if (error.code === 'EROFS' || (isFolder && READ_ONLY_CODES.has(error.code))) {
+          blocked.add(top);
+        }
+        break; // not there yet (the folder above decides, and it is writable), or decided
+      }
+    }
+  }
+  return [...blocked].sort();
+}
+
+/** Every path the stages of this manifest write when they merge: module folders, tests, reports, glue files. */
+function mergeTargets(manifest) {
+  return [...manifest.tasks, manifest.integration, manifest.patch].filter(Boolean).flatMap((entry) => entry.allowedFiles || []);
+}
+
+/**
+ * For the stages that change the main checkout (rework switches it to the
+ * run branch, finish merges into the base branch). With read-only paths git
+ * still moves the branch and reports success, but leaves the files as they
+ * were: the checkout ends up half switched. So the session is told not to try.
+ */
+function readOnlyCheckout(root, files) {
+  const readOnly = readOnlyEntries(root, files);
+  return readOnly.length
+    ? {
+        readOnly,
+        readOnlyNote:
+          `This shell cannot change these paths of the main checkout (${readOnly.slice(0, 6).join(', ')}${readOnly.length > 6 ? ', …' : ''}): Claude Code's sandbox denies writing them. ` +
+          'Do not run `git switch`, `git checkout` or `git merge` here: git would move the branch and report success while leaving the files as they were. ' +
+          'Give the user the exact commands to run in their own terminal, and continue once they say it is done.',
+      }
+    : {};
 }
 
 function cmdPrepare({ positional, flags }) {
@@ -396,7 +484,7 @@ function cmdPrepare({ positional, flags }) {
   // A merge commits in the main checkout while it is on the run branch. Where
   // the sandbox makes project paths read-only (sandbox.filesystem.denyWrite),
   // that fails halfway through `git apply`, so say it before any agent starts.
-  const readOnly = isMainCheckoutOn(root, runBranch) ? readOnlyEntries(root) : [];
+  const readOnly = isMainCheckoutOn(root, runBranch) ? readOnlyEntries(root, mergeTargets(manifest)) : [];
   if (readOnly.length) {
     errors.push(
       `The main checkout is on the run branch, but it cannot be written here (${readOnly.slice(0, 6).join(', ')}${readOnly.length > 6 ? ', …' : ''}): ` +
@@ -594,6 +682,12 @@ function commitTask(root, state, task, patch) {
   );
 }
 
+/** The files a patch's size is measured by: what it fixes, not the report the patcher writes about it. */
+function sizedFiles(task, files) {
+  const paperwork = new Set([task.patchReport, task.interfaceRequest].filter(Boolean));
+  return files.filter((file) => !paperwork.has(file));
+}
+
 // A patch run is for small fixes; a larger one belongs on the full module path.
 // Its worktree is kept so the work is not lost.
 function sizeProblem(task, changedLines) {
@@ -607,6 +701,9 @@ function sizeProblem(task, changedLines) {
     reason: `The patch changes ${changedLines} lines, more than its limit of ${task.maxChangedLines}. Rework it on the module path.`,
   };
 }
+
+/** A merged patch says how large it was, so the report need not count again. */
+const patchSize = (task, changedLines) => (task.kind === 'patch' ? { changedLines, maxChangedLines: task.maxChangedLines } : {});
 
 // The harness may remove a worktree whose working tree is clean even though
 // the agent committed its work there; the claim's branch still holds it.
@@ -626,7 +723,8 @@ function integrateFromBranch(root, state, task, claim, claims, generatedFiles) {
     dropClaims(root, claims);
     return { status: 'empty', reason: 'The agent changed only generated files outside its scope.', dropped };
   }
-  const tooLarge = sizeProblem(task, changedLineCountBetween(root, claim.base, tip, inScope));
+  const changedLines = changedLineCountBetween(root, claim.base, tip, sizedFiles(task, inScope));
+  const tooLarge = sizeProblem(task, changedLines);
   if (tooLarge) {
     return { ...tooLarge, files: inScope, branch: claim.branch };
   }
@@ -634,7 +732,7 @@ function integrateFromBranch(root, state, task, claim, claims, generatedFiles) {
   const { commit, via } = commitTask(root, state, task, patch);
   deleteBranch(root, claim.branch);
   dropClaims(root, claims);
-  return { status: 'merged', commit, via, files: inScope, dropped, recoveredFromBranch: claim.branch };
+  return { status: 'merged', commit, via, files: inScope, dropped, recoveredFromBranch: claim.branch, ...patchSize(task, changedLines) };
 }
 
 function integrateClaim(root, state, task, claim, claims, generatedFiles) {
@@ -646,7 +744,8 @@ function integrateClaim(root, state, task, claim, claims, generatedFiles) {
   if (violations.length) {
     return { status: 'violation', violations, changed, worktree: claim.worktree };
   }
-  const tooLarge = sizeProblem(task, changedLineCount(claim.worktree, claim.base, inScope));
+  const changedLines = changedLineCount(claim.worktree, claim.base, sizedFiles(task, inScope));
+  const tooLarge = sizeProblem(task, changedLines);
   if (tooLarge) {
     return { ...tooLarge, files: inScope, worktree: claim.worktree };
   }
@@ -663,7 +762,7 @@ function integrateClaim(root, state, task, claim, claims, generatedFiles) {
   const { commit, via } = commitTask(root, state, task, patch);
   removeWorktree(root, claim.worktree);
   dropClaims(root, claims);
-  return { status: 'merged', commit, via, files: inScope, dropped };
+  return { status: 'merged', commit, via, files: inScope, dropped, ...patchSize(task, changedLines) };
 }
 
 function cmdIntegrateTask({ flags }) {
@@ -869,6 +968,8 @@ function cmdStatus({ flags }) {
     ok: true,
     projectRoot: root,
     currentBranch: currentBranch(root) || null,
+    // rework switches the main checkout to the run branch it was asked about.
+    ...(flags.run ? readOnlyCheckout(root, runs.flatMap((run) => filesBetween(root, 'HEAD', run.runBranch))) : {}),
     runs,
     activeClaims: listClaims(root).map(({ runId, taskId, worktree }) => ({ runId, taskId, worktree })),
   };
@@ -948,12 +1049,15 @@ function cmdClean({ flags }) {
     if (!dryRun) {
       git(root, ['worktree', 'prune'], { allowFail: true });
     }
+    // Inside the Bash sandbox git cannot delete these records; they are harmless, and one
+    // `git worktree prune` from the user's own terminal removes them.
+    const prunable = prunableWorktrees(root);
     let branches = null;
     if (flags.branches) {
       const into = detectBaseBranch(root, optionalFlag(flags, 'into'));
       branches = { into, ...cleanBranches(root, matches, into, dryRun) };
     }
-    return { ok: true, dryRun, run: runFilter, claims, mergeWorktrees, branches };
+    return { ok: true, dryRun, run: runFilter, claims, mergeWorktrees, branches, ...(prunable.length ? { prunable } : {}) };
   });
 }
 
@@ -1033,11 +1137,15 @@ function cmdFinish({ flags }) {
   return {
     ok: true,
     runId,
+    family: runId.replace(REWORK_SUFFIX, ''),
     runBranch,
     base,
     mergeBase,
     behind,
     currentBranch: currentBranch(root) || null,
+    uncommitted: listUncommitted(root),
+    // A merge into the base branch writes what the run changed, and first what differs between here and the base.
+    ...readOnlyCheckout(root, [...filesChanged, ...filesBetween(root, 'HEAD', base)]),
     commits,
     filesChanged,
     shortstat,

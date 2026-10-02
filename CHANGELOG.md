@@ -3,6 +3,56 @@
 All notable changes to the module-pipeline plugin. Versions follow
 `plugins/module-pipeline/.claude-plugin/plugin.json`.
 
+## 0.9.1 - 2026-10-02
+
+`plan`, `rework`, `finish` and `clean` were run for real under the Bash
+sandbox (WSL2, Claude Code 2.1.286): a spec was planned, built, reworked
+once, merged both ways and cleaned up, with the project writable and with
+its sources denied for writing. What that turned up:
+
+### Fixed
+
+- In the planning session `git status` lists the sandbox's placeholder
+  entries. Told only that `commit-planning` commits everything uncommitted,
+  the session expected the commit to fail on them and wrote 22 lines into
+  `.git/info/exclude`, which would later hide real files (`.mcp.json`,
+  `.vscode/`, `.claude/skills`). `validate` and `commit-planning` now carry
+  a `sandboxNote`: the entries are skipped and must be left alone. The plan
+  and rework skills say the same.
+- With the sources denied for writing, a sandboxed `git switch` or
+  `git merge` moves the branch and exits with 0 while the files stay as they
+  were ("unable to unlink …: Read-only file system" is only a warning), so
+  `finish` would have left the main checkout half switched. `finish` and
+  `status --run` now report `readOnly` and a `readOnlyNote` when the switch
+  or merge would write a path this shell cannot write, and the finish and
+  rework skills hand the user the commands for their own terminal instead.
+  `commit-planning` says when the checkout it just put on the run branch
+  cannot be written, so the user switches it back before the run.
+- `prepare` called a checkout read-only when any tracked top-level entry
+  could not be written. The sandbox keeps its own list read-only in every
+  project (`.vscode/`, `.idea/`, `.mcp.json`), so a project that tracks one
+  of them could not start a run with the sandbox on. Only the paths the
+  stages write are looked at now.
+- A patch's size counted the report the patcher writes about its own work.
+  A two-line fix with a 28-line report was refused as `too_large` against a
+  limit of 20. The patch report and the interface request no longer count,
+  and a merged patch reports its `changedLines` too.
+- `finish` suggested `clean <run> --branches` with the rework run's id,
+  which leaves the earlier branches of the chain behind. It now names the
+  run family (`family` in the summary).
+- `finish` had the session read `git status` for uncommitted work, which
+  under the sandbox is a list of placeholders. The summary now carries
+  `uncommitted`, without them.
+
+### Added
+
+- `clean` lists `prunable` worktree records. Inside the sandbox git cannot
+  delete them; the skill tells the user to run `git worktree prune` in
+  their own terminal.
+- README: what each stage needs from the user in the strict setup, the
+  sandbox's own read-only list, pushing from the sandbox, and what to do
+  when a session has no Workflow tool.
+
 ## 0.9.0 - 2026-10-02
 
 The pipeline runs under Claude Code's Bash sandbox. Found by probing the

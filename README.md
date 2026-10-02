@@ -737,10 +737,11 @@ What else stands in the way, and what does not (checked on Claude Code
 
 Operating-system confinement comes from Claude Code's Bash sandbox, which the
 plugin cannot switch on for you. It runs on macOS, Linux and WSL2, not on
-native Windows. The pipeline works under it in two setups. In both, the
-module stage and the integration stage were run for real on Claude Code
-2.1.286 in WSL2 (three modules, glue, system review); `plan`, `rework` and
-`finish` were not part of those runs.
+native Windows. The pipeline works under it in two setups. Every stage was
+run for real in both on Claude Code 2.1.286 in WSL2: the module and
+integration stages on a three-module project (glue, system review), and
+`plan`, `run`, `rework`, `finish` and `clean` on a one-module project that
+went through one rework round.
 
 **Open: protect everything outside the project.** In the project's
 `.claude/settings.json`:
@@ -787,9 +788,22 @@ protect:
   rules from the run branch, merges in its own worktree under
   `.multiagent/`, and never writes the main checkout. If it is on the run
   branch, `prepare` stops and says so.
-- `plan`, `rework` and `finish` change files in the main checkout, and so
-  does switching branches. Do the switching, and the final merge, from your
-  own terminal.
+- The sandbox confines shells, not Claude Code's own Edit and Write tools.
+  `plan` and `rework` still write their planning files into the main
+  checkout, and committing them works, because a commit only writes `.git`.
+- What no sandboxed shell can do is change the denied paths, and that
+  includes git. A `git switch` or `git merge` there moves the branch and
+  reports success, but cannot update or remove the files: the checkout ends
+  up half switched. So the skills do not try. Where a stage needs the main
+  checkout changed, it tells you the command and you run it in your own
+  terminal:
+
+  | Stage | What you run yourself |
+  | --- | --- |
+  | `plan` | after the planning commit: `git switch main` |
+  | `run`, `integrate` | nothing; the main checkout stays on `main` |
+  | `rework` | before: `git switch multiagent-runs/<run>`; after the commit: `git switch main` |
+  | `finish` | the merge commands it prints |
 
 What to expect in either setup:
 
@@ -800,8 +814,20 @@ What to expect in either setup:
 - Every sandboxed command has its own process namespace. The pipeline lock
   therefore tells a live holder by its heartbeat, not by its process id.
 - Git cannot finish removing an agent's worktree from inside the sandbox;
-  `git worktree list` shows such entries as prunable. Run
+  `git worktree list` shows such entries as prunable, and
+  `/module-pipeline:clean` lists them. They hold no work. Run
   `git worktree prune` from your own terminal now and then.
+- The sandbox keeps a list of its own read-only in every project
+  (`.vscode/`, `.idea/`, `.mcp.json`, `.claude/settings.json` and more). A
+  project that tracks them runs as usual. Only when a run changed one of
+  them does `finish` hand you the merge commands, as in the strict setup.
+- In the planning session, leave the placeholders alone: `commit-planning`
+  skips them, and ignore rules written for them would later hide real files
+  such as `.mcp.json`.
+- A push from inside the sandbox needs the remote's host allowed, for GitHub
+  `"network": { "allowedDomains": ["github.com"] }` in the `sandbox`
+  settings; in an unattended run nothing can ask you, and the connection is
+  refused.
 - Diagnostics run inside the sandbox too. A test or build command that needs
   the network or writes outside the project needs the matching sandbox
   settings.
@@ -900,6 +926,10 @@ for the project, for example `git config user.name "Your Name"` and
 script was checked out with Windows line endings (CRLF). Versions from 0.4.0
 on ship a `.gitattributes` that keeps LF; update the plugin with
 `/plugin marketplace update multiagent-system`.
+
+**The session says it has no Workflow tool.** Dynamic workflows are off for
+this session. Turn them on in `/config` (see [Requirements](#requirements));
+for an unattended run, set `CLAUDE_CODE_WORKFLOWS=1` in the environment.
 
 **The workflow was interrupted.** Rerun the same command. Modules that already
 merged are skipped.

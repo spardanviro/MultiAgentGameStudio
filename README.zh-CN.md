@@ -586,8 +586,9 @@ git switch main && git merge --no-ff multiagent-runs/run-001-r1
 ### 在 Bash 沙箱下运行
 
 操作系统级的限制要靠 Claude Code 的 Bash 沙箱，插件无法替你打开它。沙箱支持 macOS、Linux 和 WSL2，不支持
-原生 Windows。流水线在沙箱下有两种用法。两种用法下，模块阶段和集成阶段都在 WSL2 里的 Claude Code 2.1.286 上
-真实跑过（三个模块、胶水代码、系统审查）；`plan`、`rework`、`finish` 没有包含在这些测试里。
+原生 Windows。流水线在沙箱下有两种用法。两种用法下，每个阶段都在 WSL2 里的 Claude Code 2.1.286 上真实跑过：
+模块阶段和集成阶段用的是一个三模块项目（胶水代码、系统审查）；`plan`、`run`、`rework`、`finish`、`clean` 用的是
+一个单模块项目，其中包含一轮返工。
 
 **开放模式：保护项目之外的一切。** 在项目的 `.claude/settings.json` 里写：
 
@@ -625,7 +626,18 @@ git switch main && git merge --no-ff multiagent-runs/run-001-r1
 - 执行 `run` 和 `integrate` 时，主工作区要留在别的分支上（比如 `main`）。流水线会从运行分支读取清单、
   提示词和规则，在自己位于 `.multiagent/` 下的 worktree 里合并，完全不写主工作区。如果主工作区在运行分支上，
   `prepare` 会停下来并说明原因。
-- `plan`、`rework`、`finish` 要改主工作区里的文件，切换分支也一样。切换分支和最后的合并请在你自己的终端里做。
+- 沙箱限制的是 shell，不限制 Claude Code 自带的 Edit 和 Write 工具。所以 `plan` 和 `rework` 仍然能把规划文件写进
+  主工作区，提交也能成功，因为提交只写 `.git`。
+- 沙箱里的 shell 改不了被保护的路径，git 也一样。在那里执行 `git switch` 或 `git merge`，分支会移动，命令也报告
+  成功，但文件更新不了也删不掉，主工作区会停在“切了一半”的状态。所以各技能不会去尝试。哪个阶段需要改动主
+  工作区，它会把命令告诉你，由你在自己的终端里执行：
+
+  | 阶段 | 需要你自己执行的命令 |
+  | --- | --- |
+  | `plan` | 提交规划之后：`git switch main` |
+  | `run`、`integrate` | 不需要；主工作区一直留在 `main` |
+  | `rework` | 开始前：`git switch multiagent-runs/<run>`；提交之后：`git switch main` |
+  | `finish` | 它打印出来的合并命令 |
 
 两种模式下都会遇到的情况：
 
@@ -633,8 +645,16 @@ git switch main && git merge --no-ff multiagent-runs/run-001-r1
   的路径。流水线会忽略它们；但智能体执行 `git add -A` 会失败，所以认领任务时会提示它们按路径添加，或者干脆
   不提交。
 - 每条沙箱命令都有自己的进程空间，互相看不到进程。所以流水线的锁靠心跳判断持有者是否还在，而不是靠进程号。
-- 在沙箱里 git 无法把智能体的 worktree 彻底删干净，`git worktree list` 会把这些条目标为 prunable。偶尔在你
-  自己的终端里执行一次 `git worktree prune` 即可。
+- 在沙箱里 git 无法把智能体的 worktree 彻底删干净，`git worktree list` 会把这些条目标为 prunable，
+  `/module-pipeline:clean` 也会列出它们。里面没有任何工作成果。偶尔在你自己的终端里执行一次
+  `git worktree prune` 即可。
+- 沙箱在每个项目里都有一份自己的只读名单（`.vscode/`、`.idea/`、`.mcp.json`、`.claude/settings.json` 等）。
+  项目里跟踪了这些文件也能照常运行；只有当一次运行改动了其中某个文件时，`finish` 才会像严格模式那样把合并
+  命令交给你执行。
+- 在规划会话里不要处理那些占位条目：`commit-planning` 会跳过它们；为它们写忽略规则，日后会把 `.mcp.json`
+  这样的真实文件也一并隐藏。
+- 从沙箱里推送，需要允许远程仓库的主机：GitHub 是在 `sandbox` 设置里加
+  `"network": { "allowedDomains": ["github.com"] }`；无人值守运行时没有人可以询问，连接会被直接拒绝。
 - 诊断命令也在沙箱里执行。需要联网或要写项目之外位置的测试、构建命令，要配置相应的沙箱设置。
 - 无人值守运行（`claude -p "/module-pipeline:run"`）时，要在命令行上允许工具：
   `--allowedTools Bash Read Edit Write Glob Grep Agent Workflow Skill`，或者先信任这个项目；否则工作流会停在
@@ -694,6 +714,9 @@ git switch main && git merge --no-ff multiagent-runs/run-001-r1
 
 **工作流启动失败，提示含有控制字符。** 工作流脚本被检出成了 Windows 换行符（CRLF）。0.4.0 起插件自带
 `.gitattributes` 强制使用 LF，用 `/plugin marketplace update multiagent-system` 更新插件即可。
+
+**会话说自己没有 Workflow 工具。** 这个会话没有打开动态工作流。在 `/config` 里打开（见[环境要求](#环境要求)）；
+无人值守运行时，在环境变量里设置 `CLAUDE_CODE_WORKFLOWS=1`。
 
 **工作流中途被打断。** 重新运行同一条命令即可，已合并的模块会被跳过。
 

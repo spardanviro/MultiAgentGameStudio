@@ -38,6 +38,12 @@ Show the user what it would remove:
   already merged into `branches.into`. `branches.kept` lists the ones left
   alone and why (not merged yet, or checked out somewhere).
 
+- **Stale worktree records** (`prunable`): records of worktrees whose
+  folder is already gone. Cleaning prunes them; if the list is still there
+  afterwards, this shell is not allowed to (the Bash sandbox blocks it):
+  tell the user to run `git worktree prune` in their own terminal. They
+  are harmless and hold no work.
+
 If there is nothing to remove, say so and stop.
 
 ## 2. Confirm and clean

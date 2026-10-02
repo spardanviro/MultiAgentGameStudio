@@ -56,6 +56,8 @@ A Claude Code plugin that runs a spec-driven, multi-agent build:
   `sandbox.filesystem.denyWrite` on the main checkout's sources as well, run
   and integrate with the main checkout on another branch: the pipeline reads
   its planning output from the run branch and merges in its own worktree.
+  Where a stage would have to switch or merge in a checkout its shell
+  cannot write, it hands you the git commands instead of running them.
   The top-level README has both setups.
 - **Generated files do not fail modules.** Files matching `generated_files`
   (such as Godot `.uid` and `.import` files) are dropped when they land outside

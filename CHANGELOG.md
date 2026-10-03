@@ -3,6 +3,36 @@
 All notable changes to the module-pipeline plugin. Versions follow
 `plugins/module-pipeline/.claude-plugin/plugin.json`.
 
+## 0.10.0 - 2026-10-03
+
+Changed:
+
+- Roles no longer share one model. Module implementers and the integrator
+  run on `sonnet`; module reviewers, the system reviewer and the patcher
+  stay on `opus`. Both are aliases, so a role moves to each new version of
+  its family and never changes family. The manifest still cannot set a
+  model.
+- Every role now thinks at `high` by default. A preset gives all four roles
+  the same level: `economy` medium, `balanced` (the default) high,
+  `quality` xhigh. Before, `balanced` was medium with the system reviewer
+  at high, `economy` low/medium and `quality` high/xhigh. A manifest that
+  names a preset, or none, therefore runs at different efforts than under
+  0.9.3; roles set under `effort:` and a module's own `effort` are
+  unchanged.
+- `validate` and `prepare` report the model of each row of the agent count
+  (`estimate.run`, `estimate.integrate`) and all of them under
+  `estimate.models`; `estimate.model` and the top-level `model` are gone.
+  The workflows take `models` in their args and refuse args without it.
+
+Docs:
+
+- The READMEs report the `claude plugin eval` results for planning on 0.9.3,
+  and what they do not cover.
+
+Not yet measured: this release changes which model writes the code, and no
+run has compared the result against 0.9.3. The eval suite has not been run
+on it either.
+
 ## 0.9.3 - 2026-10-02
 
 Fixed:

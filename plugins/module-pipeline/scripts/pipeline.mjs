@@ -516,7 +516,7 @@ function cmdPrepare({ positional, flags }) {
     manifestSource: source,
     goal: manifest.goal,
     spec: manifest.project.spec,
-    model: manifest.model,
+    models: manifest.models,
     efforts: manifest.efforts,
     warnings: manifest.warnings,
     sizing: manifest.sizing,
@@ -529,7 +529,7 @@ function cmdPrepare({ positional, flags }) {
     runId: manifest.runId,
     runBranch: state.runBranch,
     goal: manifest.goal,
-    model: manifest.model,
+    models: manifest.models,
     efforts: manifest.efforts,
     rules: manifest.sharedLayer?.rules || null,
   };

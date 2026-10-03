@@ -94,15 +94,17 @@ The hooks only act on the plugin's own `module-implementer`, `integrator` and
 
 ## Model and thinking effort
 
-Every agent runs on the strongest model (`opus`, always the newest Opus).
-Roles differ only in thinking effort, set per role in the manifest:
+The model of each role is fixed: module implementers and the integrator run
+on `sonnet`; module reviewers, the system reviewer and the patcher run on
+`opus`. Both are aliases, so each role follows the newest model of its family.
+Thinking effort is set per role in the manifest and defaults to `high`:
 
 ```yaml
 effort:
   preset: balanced          # economy | balanced | quality
-  module_implementer: medium
-  module_reviewer: medium
-  integrator: medium
+  module_implementer: high
+  module_reviewer: high
+  integrator: high
   system_reviewer: high
 ```
 
@@ -169,9 +171,10 @@ its own.
   `.multiagent/pipeline/merge/`.
 - **Your `diagnostics.compile_command` and `diagnostics.test_command`**, exactly
   as written in the manifest, in a checkout of the run branch.
-- **Claude Code agents** started by the workflows, all on the `opus` model:
-  one implementer and one reviewer per module, an integrator and a system
-  reviewer, or for a patch run one patcher and one reviewer. They use Claude Code's normal
+- **Claude Code agents** started by the workflows: one implementer (`sonnet`)
+  and one reviewer (`opus`) per module, an integrator (`sonnet`) and a system
+  reviewer (`opus`), or for a patch run one patcher and one reviewer (both
+  `opus`). They use Claude Code's normal
   tools under your permission settings; implementers and the integrator also
   run your project's build and tests.
 

@@ -13,9 +13,9 @@ run:
   goal: One-sentence goal of this run
 effort:                           # thinking effort per role: low | medium | high | xhigh | max
   preset: balanced                # economy | balanced | quality (default balanced); roles below override it
-  module_implementer: medium      # one agent per module
-  module_reviewer: medium         # one read-only reviewer per merged module
-  integrator: medium              # writes the glue code
+  module_implementer: high        # one agent per module
+  module_reviewer: high           # one read-only reviewer per merged module
+  integrator: high                # writes the glue code
   system_reviewer: high           # reviews the integrated result against the spec
 shared_layer:                     # required with two or more modules
   task: shared                    # the module that builds it; it runs first, every other module depends on it
@@ -61,15 +61,27 @@ integration:                      # optional glue stage, run by /module-pipeline
 
 ## Model and thinking effort
 
-Every agent runs on the strongest model (`opus`, which always resolves to the
-newest Opus). Roles differ only in how hard they think. There is no `model`
-field; a manifest that sets one is rejected.
+The model of each role is fixed. The agents that write a module or the glue
+run on `sonnet`; the agents that judge the result, and the patcher that
+repairs it, run on `opus`:
 
-| Preset | module_implementer | module_reviewer | integrator | system_reviewer |
-| --- | --- | --- | --- | --- |
-| `economy` | low | low | low | medium |
-| `balanced` (default) | medium | medium | medium | high |
-| `quality` | high | high | high | xhigh |
+| Role | Model |
+| --- | --- |
+| module implementer, integrator | `sonnet` |
+| module reviewer, system reviewer, patcher | `opus` |
+
+Both names are aliases: each resolves to the newest model of its family, so a
+role follows new versions and never changes family. There is no `model` field;
+a manifest that sets one is rejected.
+
+Thinking effort is what the manifest sets. A preset gives every role the same
+level:
+
+| Preset | every role |
+| --- | --- |
+| `economy` | medium |
+| `balanced` (default) | high |
+| `quality` | xhigh |
 
 Precedence, highest first: a task's own `effort`, the role under `effort:`,
 the preset. The pipeline's own commands (prepare, merge, diagnostics) need no

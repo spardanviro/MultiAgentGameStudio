@@ -9,8 +9,8 @@ export const meta = {
 }
 
 // args is the workflowArgs object from `pipeline.mjs prepare` for a patch manifest.
-const { pluginRoot, runId, runBranch, goal, patch, efforts } = args || {}
-if (typeof pluginRoot !== 'string' || typeof runId !== 'string' || args.mode !== 'patch' || !efforts) {
+const { pluginRoot, runId, runBranch, goal, patch, efforts, models } = args || {}
+if (typeof pluginRoot !== 'string' || typeof runId !== 'string' || args.mode !== 'patch' || !efforts || !models) {
   throw new Error('module-pipeline-patch requires the workflowArgs printed by `pipeline.mjs prepare` for a patch manifest')
 }
 if (/["\r\n]/.test(pluginRoot) || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(runId)) {
@@ -18,8 +18,7 @@ if (/["\r\n]/.test(pluginRoot) || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(runId)) {
 }
 const CLI = `node "${pluginRoot}/scripts/pipeline.mjs"`
 const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max']
-// Every agent runs on the strongest model; roles differ only in thinking effort.
-const model = args.model || 'opus'
+// `models` gives each role its model (ROLE_MODELS in scripts/lib/manifest.mjs); `efforts` its thinking effort.
 // The cross-module rules file (shared_layer.rules), when the run has one.
 const rules = typeof args.rules === 'string' ? args.rules : null
 const rulesRead = rules ? `, ${rules} (the cross-module rules)` : ''
@@ -87,7 +86,8 @@ const REVIEW_SCHEMA = {
 const fence = (text) =>
   `<<<AGENT_OUTPUT\n${String(text == null ? '' : text).replace(/<<<AGENT_OUTPUT|AGENT_OUTPUT>>>/g, '[marker removed]')}\nAGENT_OUTPUT>>>`
 
-function agentOptions(effort) {
+function agentOptions(role, effort) {
+  const model = models[role]
   return EFFORTS.includes(effort) ? { model, effort } : { model }
 }
 
@@ -112,7 +112,7 @@ Run goal: ${goal || '(see the rework decisions)'}
     schema: PATCH_SCHEMA,
     label: 'patch',
     phase: 'Patch',
-    ...agentOptions(patch.effort),
+    ...agentOptions('patcher', patch.effort),
   },
 )
 
@@ -138,7 +138,7 @@ Number issues PATCH-1, PATCH-2, and so on.`,
     schema: REVIEW_SCHEMA,
     label: 'review:patch',
     phase: 'Review',
-    ...agentOptions(efforts.moduleReviewer),
+    ...agentOptions('moduleReviewer', efforts.moduleReviewer),
   },
 )
 

@@ -194,11 +194,12 @@ glue. Keep your own reading of the existing code to what planning needs.
      Godot use `["*.uid", "*.import", ".godot/"]`; for Unity
      `["*.meta", "Library/", "Temp/", "Logs/"]`. Leave it out when nothing
      applies.
-   - `effort.preset` to `balanced` (module agents and reviewers at medium,
-     the system reviewer at high) unless the user asked for something
-     cheaper (`economy`) or more thorough (`quality`). Every agent runs on the
-     strongest model; never write a `model` field. Give a module its own
-     `effort` only when it is clearly harder (or much simpler) than the rest.
+   - `effort.preset` to `balanced` (every role at high) unless the user asked
+     for something cheaper (`economy`) or more thorough (`quality`). The model
+     of each role is fixed (module implementers and the integrator on sonnet,
+     reviewers and the patcher on opus); never write a `model` field. Give a
+     module its own `effort` only when it is clearly harder (or much simpler)
+     than the rest.
 10. **Validate** and fix until it passes, and settle every warning. It
    rejects a rules file that leaves a topic empty:
 
@@ -212,13 +213,13 @@ glue. Keep your own reading of the existing code to what planning needs.
    decided yourself, cross-module rules and everything else the spec left
    open, one line each and the ones the user will see first, so the user
    can object before agents build on them. Then show the cost
-   picture from `estimate` in the validate output: the model every
-   agent runs on, how many agents `/module-pipeline:run` and
-   `/module-pipeline:integrate` will start by role, and each role's thinking
-   effort and the preset. Say plainly that every implementer and reviewer is
-   a full agent session on the strongest model, and offer to change the
-   effort of any role (for example `effort.module_reviewer: medium`), switch
-   `effort.preset`, or give single modules their own `effort`. Then ask
+   picture from `estimate` in the validate output: how many agents
+   `/module-pipeline:run` and `/module-pipeline:integrate` will start by
+   role, each role's model and thinking effort, and the preset. Say plainly
+   that every implementer and reviewer is a full agent session, and offer to
+   change the effort of any role (for example
+   `effort.module_reviewer: medium`), switch `effort.preset`, or give single
+   modules their own `effort`. Then ask
    whether to commit the planning output. Only if they agree, run:
 
    ```

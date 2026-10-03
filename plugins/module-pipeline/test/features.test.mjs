@@ -42,16 +42,23 @@ test('manifest: every role gets an effort from the preset unless set, and models
   const withEffort = (lines) => DEFAULT_MANIFEST.replace('effort:\n  module_implementer: medium\n', `effort:\n${lines}\n`);
 
   const plain = parse(DEFAULT_MANIFEST.replace('effort:\n  module_implementer: medium\n', ''));
-  assert.equal(plain.model, 'opus');
+  assert.deepEqual(plain.models, {
+    moduleImplementer: 'sonnet',
+    moduleReviewer: 'opus',
+    integrator: 'sonnet',
+    systemReviewer: 'opus',
+    patcher: 'opus',
+  }, 'the agents that write modules and glue run on sonnet, the others on opus');
   assert.equal(plain.preset, 'balanced');
-  assert.deepEqual(plain.efforts, { moduleImplementer: 'medium', moduleReviewer: 'medium', integrator: 'medium', systemReviewer: 'high' });
+  assert.deepEqual(plain.efforts, { moduleImplementer: 'high', moduleReviewer: 'high', integrator: 'high', systemReviewer: 'high' });
   assert.deepEqual(plain.warnings, []);
+  assert.equal(parse(withEffort('  preset: economy')).efforts.systemReviewer, 'medium');
 
   const quality = parse(withEffort('  preset: quality\n  module_reviewer: low'));
   assert.equal(quality.efforts.moduleReviewer, 'low', 'an explicit role wins over its preset');
   assert.equal(quality.efforts.systemReviewer, 'xhigh');
-  assert.equal(quality.tasks[0].effort, 'high');
-  assert.equal(quality.integration.effort, 'high');
+  assert.equal(quality.tasks[0].effort, 'xhigh');
+  assert.equal(quality.integration.effort, 'xhigh');
 
   const perTask = parse(DEFAULT_MANIFEST.replace('    acceptance: [Player moves]', '    acceptance: [Player moves]\n    effort: max'));
   assert.deepEqual(perTask.tasks.map((task) => task.effort), ['max', 'medium', 'medium']);
@@ -71,16 +78,19 @@ test('manifest: every role gets an effort from the preset unless set, and models
   assert.throws(() => parse(withGenerated(DEFAULT_MANIFEST, ['file?.tmp'])), /only "\*" wildcards/);
 });
 
-test('validate counts the agents a run and its integration will start, by role and effort', () => {
+test('validate counts the agents a run and its integration will start, by role, model and effort', () => {
   const { root, manifest } = makeProject(DEFAULT_MANIFEST.replace('  module_implementer: medium', '  preset: economy'));
   const { json } = cli(root, 'validate', manifest);
-  assert.equal(json.estimate.model, 'opus');
+  assert.equal(json.estimate.models.integrator, 'sonnet');
   assert.equal(json.estimate.preset, 'economy');
   assert.deepEqual(json.estimate.run, [
-    { role: 'module-implementer', count: 3, effort: 'low' },
-    { role: 'module-reviewer', count: 3, effort: 'low' },
+    { role: 'module-implementer', count: 3, model: 'sonnet', effort: 'medium' },
+    { role: 'module-reviewer', count: 3, model: 'opus', effort: 'medium' },
   ]);
-  assert.deepEqual(json.estimate.integrate.map((row) => row.role), ['integrator', 'system-reviewer']);
+  assert.deepEqual(json.estimate.integrate, [
+    { role: 'integrator', count: 1, model: 'sonnet', effort: 'medium' },
+    { role: 'system-reviewer', count: 1, model: 'opus', effort: 'medium' },
+  ]);
   assert.equal(json.estimate.totalAgents, 8);
 });
 

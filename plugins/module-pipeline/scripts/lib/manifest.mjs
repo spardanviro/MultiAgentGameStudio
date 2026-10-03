@@ -18,7 +18,7 @@
 //   patch:            # instead of tasks + integration: a small rework done by one agent
 //     { prompt_file, allowed_files, acceptance?, max_changed_lines?, patch_report?, interface_request?, effort? }
 //
-// Every agent runs on the strongest model; roles differ only in thinking effort.
+// The model of each role is fixed (ROLE_MODELS); the manifest sets thinking effort only.
 import fs from 'node:fs';
 import path from 'node:path';
 import yaml from '../vendor/js-yaml.mjs';
@@ -33,9 +33,17 @@ const PATCH_ID = 'patch';
 // in-scope diff (added plus deleted lines) is larger than this.
 export const DEFAULT_PATCH_LINES = 300;
 
-// The model every pipeline agent runs on. The alias always resolves to the
-// newest Opus, so the pipeline follows model upgrades without edits.
-export const AGENT_MODEL = 'opus';
+// The model each role runs on. The agents that write a module or the glue run
+// on Sonnet; the agents that judge the result, and the patcher that repairs
+// it, run on Opus. Each alias resolves to the newest model of its family, so a
+// role follows new versions without edits and never changes family.
+export const ROLE_MODELS = {
+  moduleImplementer: 'sonnet',
+  moduleReviewer: 'opus',
+  integrator: 'sonnet',
+  systemReviewer: 'opus',
+  patcher: 'opus',
+};
 
 export const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'];
 
@@ -55,13 +63,14 @@ const RETIRED_ROLES = {
 export const DEFAULT_PRESET = 'balanced';
 
 // Effort per role; a role set explicitly in the manifest wins over its preset.
-// The system reviewer judges the whole result against the spec, so it thinks
-// one step harder than the per-module roles. (The Main Architect is the user's
-// session running plan/rework; those skills set their own effort.)
+// A preset gives every role the same level, and the default is high. (The Main
+// Architect is the user's session running plan/rework; those skills set their
+// own effort.)
+const allRoles = (effort) => ({ moduleImplementer: effort, moduleReviewer: effort, integrator: effort, systemReviewer: effort });
 export const PRESETS = {
-  economy: { moduleImplementer: 'low', moduleReviewer: 'low', integrator: 'low', systemReviewer: 'medium' },
-  balanced: { moduleImplementer: 'medium', moduleReviewer: 'medium', integrator: 'medium', systemReviewer: 'high' },
-  quality: { moduleImplementer: 'high', moduleReviewer: 'high', integrator: 'high', systemReviewer: 'xhigh' },
+  economy: allRoles('medium'),
+  balanced: allRoles('high'),
+  quality: allRoles('xhigh'),
 };
 
 // How many modules (not counting the shared layer) suit a project of a given
@@ -100,7 +109,8 @@ function rejectModelFields(raw, fieldName) {
   const found = ['model', 'review_model', 'sub_agent_model', 'review_agent_model'].filter((field) => raw && raw[field] != null);
   if (found.length) {
     throw new Error(
-      `${fieldName}.${found[0]} is no longer supported: every agent runs on the strongest model (${AGENT_MODEL}). ` +
+      `${fieldName}.${found[0]} is no longer supported: the model of each role is fixed ` +
+        `(module implementers and the integrator on ${ROLE_MODELS.moduleImplementer}, the other agents on ${ROLE_MODELS.moduleReviewer}). ` +
         'Set thinking effort per role under `effort:` instead.',
     );
   }
@@ -496,7 +506,7 @@ export function validateManifest(raw, manifestPath) {
     projectRoot: resolveProjectRoot(raw.project?.root, manifestPath),
     runId,
     goal: String(raw.run?.goal || ''),
-    model: AGENT_MODEL,
+    models: ROLE_MODELS,
     preset,
     efforts,
     diagnostics: {
@@ -575,19 +585,19 @@ function normalizeGenerated(raw) {
 }
 
 /**
- * How many agents a run starts, by role and thinking effort. Cost is not
- * estimated: it depends far more on the modules than on the counts.
+ * How many agents a run starts, by role, model and thinking effort. Cost is
+ * not estimated: it depends far more on the modules than on the counts.
  */
 export function estimateRun(manifest, done = new Set()) {
-  const { efforts } = manifest;
+  const { efforts, models } = manifest;
   if (manifest.patch) {
     const run = done.has(PATCH_ID)
       ? []
       : [
-          { role: 'patcher', count: 1, effort: manifest.patch.effort },
-          { role: 'module-reviewer', count: 1, effort: efforts.moduleReviewer },
+          { role: 'patcher', count: 1, model: models.patcher, effort: manifest.patch.effort },
+          { role: 'module-reviewer', count: 1, model: models.moduleReviewer, effort: efforts.moduleReviewer },
         ];
-    return { model: manifest.model, preset: manifest.preset, efforts, run, integrate: [], totalAgents: run.length };
+    return { models, preset: manifest.preset, efforts, run, integrate: [], totalAgents: run.length };
   }
   const pending = manifest.tasks.filter((task) => !done.has(task.id));
   const byEffort = new Map();
@@ -595,18 +605,18 @@ export function estimateRun(manifest, done = new Set()) {
     byEffort.set(task.effort, (byEffort.get(task.effort) || 0) + 1);
   }
   const run = [
-    ...[...byEffort].map(([effort, count]) => ({ role: 'module-implementer', count, effort })),
-    { role: 'module-reviewer', count: pending.length, effort: efforts.moduleReviewer },
+    ...[...byEffort].map(([effort, count]) => ({ role: 'module-implementer', count, model: models.moduleImplementer, effort })),
+    { role: 'module-reviewer', count: pending.length, model: models.moduleReviewer, effort: efforts.moduleReviewer },
   ].filter((row) => row.count > 0);
   const integrate = manifest.integration
     ? [
-        { role: 'integrator', count: 1, effort: manifest.integration.effort },
-        { role: 'system-reviewer', count: 1, effort: efforts.systemReviewer },
+        { role: 'integrator', count: 1, model: models.integrator, effort: manifest.integration.effort },
+        { role: 'system-reviewer', count: 1, model: models.systemReviewer, effort: efforts.systemReviewer },
       ]
     : [];
   const sum = (rows) => rows.reduce((total, row) => total + row.count, 0);
   return {
-    model: manifest.model,
+    models,
     preset: manifest.preset,
     efforts,
     run,

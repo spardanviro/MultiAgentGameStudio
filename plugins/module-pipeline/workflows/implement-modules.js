@@ -10,8 +10,8 @@ export const meta = {
 
 // args is the workflowArgs object from `pipeline.mjs prepare`. The session
 // ran prepare itself, so no agent is spent on checking the project.
-const { pluginRoot, runId, goal, waves, skipped, efforts } = args || {}
-if (typeof pluginRoot !== 'string' || typeof runId !== 'string' || !Array.isArray(waves) || !efforts) {
+const { pluginRoot, runId, goal, waves, skipped, efforts, models } = args || {}
+if (typeof pluginRoot !== 'string' || typeof runId !== 'string' || !Array.isArray(waves) || !efforts || !models) {
   throw new Error('module-pipeline-implement requires the workflowArgs printed by `pipeline.mjs prepare`')
 }
 if (/["\r\n]/.test(pluginRoot) || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(runId)) {
@@ -19,8 +19,7 @@ if (/["\r\n]/.test(pluginRoot) || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(runId)) {
 }
 const CLI = `node "${pluginRoot}/scripts/pipeline.mjs"`
 const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max']
-// Every agent runs on the strongest model; roles differ only in thinking effort.
-const model = args.model || 'opus'
+// `models` gives each role its model (ROLE_MODELS in scripts/lib/manifest.mjs); `efforts` its thinking effort.
 // The cross-module rules file (shared_layer.rules), when the run has one.
 const rules = typeof args.rules === 'string' ? args.rules : null
 const rulesRead = rules ? `, ${rules} (the cross-module rules)` : ''
@@ -83,7 +82,8 @@ const REVIEW_SCHEMA = {
 const fence = (text) =>
   `<<<AGENT_OUTPUT\n${String(text == null ? '' : text).replace(/<<<AGENT_OUTPUT|AGENT_OUTPUT>>>/g, '[marker removed]')}\nAGENT_OUTPUT>>>`
 
-function agentOptions(effort) {
+function agentOptions(role, effort) {
+  const model = models[role]
   return EFFORTS.includes(effort) ? { model, effort } : { model }
 }
 
@@ -157,7 +157,7 @@ for (let index = 0; index < waves.length; index += 1) {
             schema: IMPL_SCHEMA,
             label: `implement:${task.id}`,
             phase: 'Implement',
-            ...agentOptions(task.effort),
+            ...agentOptions('moduleImplementer', task.effort),
           }),
     (impl, task) =>
       agent(reviewPrompt(task, impl), {
@@ -165,7 +165,7 @@ for (let index = 0; index < waves.length; index += 1) {
         schema: REVIEW_SCHEMA,
         label: `review:${task.id}`,
         phase: 'Review',
-        ...agentOptions(efforts.moduleReviewer),
+        ...agentOptions('moduleReviewer', efforts.moduleReviewer),
       }).then((review) => ({ impl, review })),
   )
 

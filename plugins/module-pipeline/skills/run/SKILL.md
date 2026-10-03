@@ -44,8 +44,8 @@ checks the session and the checkout, and returns what the workflow needs.
 ## 2. Launch the workflow
 
 Tell the user in two or three lines how many modules run in how many waves,
-and how many agents that starts at which thinking effort (`estimate.run`;
-every agent runs on `estimate.model`). Mention that they may switch the main
+and how many agents that starts on which model at which thinking effort
+(`estimate.run`). Mention that they may switch the main
 checkout to another branch and keep working while it runs. This command
 invocation is the user's authorization. Start the workflow with the
 `workflowScript` and `workflowArgs` from the prepare output, exactly as

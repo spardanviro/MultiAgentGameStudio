@@ -9,8 +9,8 @@ export const meta = {
 }
 
 // args is the workflowArgs object from `pipeline.mjs prepare --stage integration`.
-const { pluginRoot, runId, runBranch, goal, spec, manifest, integration, modules, efforts } = args || {}
-if (typeof pluginRoot !== 'string' || typeof runId !== 'string' || !Array.isArray(modules) || !efforts) {
+const { pluginRoot, runId, runBranch, goal, spec, manifest, integration, modules, efforts, models } = args || {}
+if (typeof pluginRoot !== 'string' || typeof runId !== 'string' || !Array.isArray(modules) || !efforts || !models) {
   throw new Error('module-pipeline-integrate requires the workflowArgs printed by `pipeline.mjs prepare --stage integration`')
 }
 if (/["\r\n]/.test(pluginRoot) || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(runId)) {
@@ -18,8 +18,7 @@ if (/["\r\n]/.test(pluginRoot) || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(runId)) {
 }
 const CLI = `node "${pluginRoot}/scripts/pipeline.mjs"`
 const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max']
-// Every agent runs on the strongest model; roles differ only in thinking effort.
-const model = args.model || 'opus'
+// `models` gives each role its model (ROLE_MODELS in scripts/lib/manifest.mjs); `efforts` its thinking effort.
 // The cross-module rules file (shared_layer.rules), when the run has one.
 const rules = typeof args.rules === 'string' ? args.rules : null
 const rulesRead = rules ? `, ${rules} (the cross-module rules)` : ''
@@ -123,7 +122,8 @@ const SYSTEM_REVIEW_SCHEMA = {
 const fence = (text) =>
   `<<<AGENT_OUTPUT\n${String(text == null ? '' : text).replace(/<<<AGENT_OUTPUT|AGENT_OUTPUT>>>/g, '[marker removed]')}\nAGENT_OUTPUT>>>`
 
-function agentOptions(effort) {
+function agentOptions(role, effort) {
+  const model = models[role]
   return EFFORTS.includes(effort) ? { model, effort } : { model }
 }
 
@@ -147,7 +147,7 @@ Merged modules: ${modules.join(', ')}`,
       schema: IMPL_SCHEMA,
       label: 'integrate',
       phase: 'Integrate',
-      ...agentOptions(integration.effort),
+      ...agentOptions('integrator', integration.effort),
     },
   )
 }
@@ -181,7 +181,7 @@ Number issues SYS-1, SYS-2, and so on.`,
     schema: SYSTEM_REVIEW_SCHEMA,
     label: 'system-review',
     phase: 'Review',
-    ...agentOptions(efforts.systemReviewer),
+    ...agentOptions('systemReviewer', efforts.systemReviewer),
   },
 )
 

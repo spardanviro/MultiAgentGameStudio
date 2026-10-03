@@ -48,7 +48,7 @@ test('a patch manifest has one patch task instead of modules and integration', (
   assert.deepEqual(manifest.tasks, []);
   assert.equal(manifest.integration, null);
   assert.equal(manifest.patch.maxChangedLines, 40);
-  assert.equal(manifest.patch.effort, 'medium');
+  assert.equal(manifest.patch.effort, 'high');
   assert.deepEqual(manifest.patch.allowedFiles, [
     'work/patches/run-001-r1_patch_report.md',
     'work/patches/run-001-r1_interface_request.md',
@@ -71,14 +71,14 @@ test('validate and prepare describe a patch run: two agents, no waves, no integr
   assert.equal(validated.mode, 'patch');
   assert.deepEqual(validated.waves, []);
   assert.deepEqual(validated.estimate.run, [
-    { role: 'patcher', count: 1, effort: 'medium' },
-    { role: 'module-reviewer', count: 1, effort: 'medium' },
+    { role: 'patcher', count: 1, model: 'opus', effort: 'high' },
+    { role: 'module-reviewer', count: 1, model: 'opus', effort: 'high' },
   ]);
   assert.equal(validated.estimate.totalAgents, 2);
 
   const prepared = cli(root, 'prepare', manifest).json;
   assert.equal(prepared.workflowArgs.mode, 'patch');
-  assert.deepEqual(prepared.workflowArgs.patch, { effort: 'medium', maxChangedLines: 40 });
+  assert.deepEqual(prepared.workflowArgs.patch, { effort: 'high', maxChangedLines: 40 });
   assert.match(cli(root, 'prepare', manifest, '--stage', 'integration').json.errors[0], /A patch run has no integration stage/);
 });
 
@@ -101,9 +101,9 @@ test('patch workflow: one patcher fixes several folders, one reviewer merges, ru
   assert.equal(result.merge.status, 'merged');
   assert.equal(result.diagnostics.failed, false);
   assert.deepEqual(claimedTask.acceptance, ['Player speed is 85', 'The HUD shows the new speed']);
-  assert.deepEqual(calls.map((call) => [call.agentType, call.effort]), [
-    ['module-pipeline:patcher', 'medium'],
-    ['module-pipeline:module-reviewer', 'medium'],
+  assert.deepEqual(calls.map((call) => [call.agentType, call.model, call.effort]), [
+    ['module-pipeline:patcher', 'opus', 'high'],
+    ['module-pipeline:module-reviewer', 'opus', 'high'],
   ]);
   assert.equal(git(root, 'log', '-1', '--format=%s', 'multiagent-runs/run-001-r1'), 'module-pipeline(run-001-r1): patch');
   assert.equal(cli(root, 'status', '--run', 'run-001-r1').json.runs[0].tasks.patch, 'merged');

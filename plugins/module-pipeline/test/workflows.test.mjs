@@ -68,9 +68,11 @@ test('implement workflow: waves run in order, each reviewer merges its module an
   const implementCalls = calls.filter((call) => call.agentType === 'module-pipeline:module-implementer');
   assert.equal(implementCalls.length, 3);
   assert.ok(implementCalls.every((call) => call.isolation === 'worktree'));
-  assert.ok(calls.every((call) => call.model === 'opus'), 'every agent runs on the strongest model');
+  const reviewCalls = calls.filter((call) => call.agentType === 'module-pipeline:module-reviewer');
+  assert.ok(implementCalls.every((call) => call.model === 'sonnet'), 'implementers run on sonnet');
+  assert.ok(reviewCalls.every((call) => call.model === 'opus'), 'reviewers run on opus');
   assert.ok(implementCalls.every((call) => call.effort === 'medium'), 'effort.module_implementer reaches the implementers');
-  assert.ok(calls.filter((call) => call.agentType === 'module-pipeline:module-reviewer').every((call) => call.effort === 'medium'));
+  assert.ok(reviewCalls.every((call) => call.effort === 'high'), 'a role the manifest leaves alone thinks at high');
 });
 
 test('implement workflow: an out-of-scope module is not merged and its dependents are skipped', async () => {
@@ -178,10 +180,9 @@ test('integrate workflow: the system reviewer commits the glue, runs diagnostics
   assert.equal(result.status, 'passed', JSON.stringify(result, null, 2));
   assert.equal(result.integration.status, 'merged');
   assert.equal(result.diagnostics.failed, false);
-  assert.ok(calls.every((call) => call.model === 'opus'));
-  assert.deepEqual(calls.map((call) => [call.agentType, call.effort]), [
-    ['module-pipeline:integrator', 'medium'],
-    ['module-pipeline:system-reviewer', 'high'],
+  assert.deepEqual(calls.map((call) => [call.agentType, call.model, call.effort]), [
+    ['module-pipeline:integrator', 'sonnet', 'high'],
+    ['module-pipeline:system-reviewer', 'opus', 'high'],
   ]);
   assert.equal(git(root, 'log', '-1', '--format=%s'), 'module-pipeline(run-001): integration');
   assert.match(reviewPrompt, /against the spec \(docs\/spec\.md\)/);

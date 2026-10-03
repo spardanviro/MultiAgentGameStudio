@@ -36,6 +36,7 @@ plugin, in [`plugins/module-pipeline`](plugins/module-pipeline/).
 - [What the scope guard guarantees](#what-the-scope-guard-guarantees)
 - [Tips for good results](#tips-for-good-results)
 - [Troubleshooting](#troubleshooting)
+- [Eval results](#eval-results)
 - [Repository layout and development](#repository-layout-and-development)
 
 ---
@@ -122,18 +123,19 @@ codebase that splits cleanly into modules.
   diagnostics, writes the result and the report, and prints the summary.
 - **Leaves your checkout free.** You can switch the main checkout to another
   branch and keep working while a run is in progress.
-- **Runs every agent on the strongest model.** All roles use Opus (always the
-  newest one). They differ only in thinking effort, which you set per role:
-  implementers, module reviewers, integrator and system reviewer.
-  Presets (`economy`, `balanced`, `quality`) set all of them at once; the
-  default gives the system reviewer `high` and every other agent `medium`,
-  and the Main Architect (`plan`, `rework`) always thinks at `high`.
+- **Writes on Sonnet, judges on Opus.** Module implementers and the
+  integrator run on Sonnet; module reviewers, the system reviewer and the
+  patcher run on Opus. Each role always gets the newest model of its family.
+  You set thinking effort per role: implementers, module reviewers, integrator
+  and system reviewer. Presets (`economy`, `balanced`, `quality`) set all of
+  them at once; the default is `high` for every agent, and the Main Architect
+  (`plan`, `rework`) always thinks at `high`.
 - **Keeps agents lean.** Only the Main Architect loads your CLAUDE.md files;
   every other agent starts without them and reads the project rules the
   architect wrote into `docs/conventions.md`. No agent is spent on relaying
   pipeline commands.
 - **Shows the cost up front.** Planning ends with a count of the agents each
-  stage will start, by role and thinking effort, and a check of the module
+  stage will start, by role, model and thinking effort, and a check of the module
   count against the project's size.
 - **Wraps up.** `finish` summarizes the run branch, drafts a PR description,
   and merges or opens a PR when you say so; `clean` removes leftover worktrees
@@ -175,8 +177,8 @@ Roles:
 | `system-reviewer` | one per integration | no; it runs the glue merge and diagnostics, then reviews read-only |
 | `patcher` | one per patch run (small rework) | only `patch.allowed_files` |
 
-Every role runs on the same model, the newest Opus. What differs is the
-thinking effort, set per role in the manifest (see
+The implementer and the integrator run on the newest Sonnet, the other three
+on the newest Opus. Thinking effort is set per role in the manifest (see
 [Model and thinking effort](#model-and-thinking-effort)).
 
 ## Requirements
@@ -248,11 +250,11 @@ example:
 
 It also checks the module count against the estimated size ("about 3,000
 lines: 2-4 modules recommended, 3 planned") and tells you what the run will
-cost in agents, for example "all on Opus; `run`: 4 implementers (medium),
-4 reviewers (medium); `integrate`: integrator (medium), system reviewer
-(high)". You
+cost in agents, for example "`run`: 4 implementers (sonnet, high),
+4 reviewers (opus, high); `integrate`: integrator (sonnet, high), system
+reviewer (opus, high)". You
 can change the thinking effort of any role here, for example "reviewers on
-high, system reviewer on max", switch the preset, or give one hard module
+xhigh, system reviewer on max", switch the preset, or give one hard module
 `xhigh`.
 
 If the plan looks right, say yes. It then commits the planning output on the new
@@ -343,8 +345,8 @@ the next free `run-NNN`.
   an effort preset.
 - Validates the manifest and fixes it until it passes.
 - Shows the module table, the waves, and how many agents `run` and `integrate`
-  will start, by role and thinking effort, and offers to change any role's
-  effort.
+  will start, by role, model and thinking effort, and offers to change any
+  role's effort.
 - **Asks before committing.** With your yes, it switches to
   `multiagent-runs/<run-id>` and commits the planning output there.
 
@@ -497,9 +499,9 @@ run:
   goal: Playable single-level prototype
 effort:                             # thinking effort per role: low | medium | high | xhigh | max
   preset: balanced                  # economy | balanced | quality; the roles below override it
-  module_implementer: medium
-  module_reviewer: medium
-  integrator: medium
+  module_implementer: high
+  module_reviewer: high
+  integrator: high
   system_reviewer: high
 shared_layer:                       # required with two or more modules
   task: shared                      # built first; every other module depends on it
@@ -579,15 +581,27 @@ A module can always write its owned folder, its test folder,
 
 ### Model and thinking effort
 
-Every agent runs on the strongest model: `opus`, which always resolves to the
-newest Opus. There is deliberately no way to put a role on a weaker model.
-Roles differ only in thinking effort:
+The model of each role is fixed. The agents that write a module or the glue
+run on Sonnet; the agents that judge the result, and the patcher that repairs
+it, run on Opus:
 
-| Preset | module_implementer | module_reviewer | integrator | system_reviewer |
-| --- | --- | --- | --- | --- |
-| `economy` | low | low | low | medium |
-| `balanced` (default) | medium | medium | medium | high |
-| `quality` | high | high | high | xhigh |
+| Role | Model |
+| --- | --- |
+| module implementer, integrator | `sonnet` |
+| module reviewer, system reviewer, patcher | `opus` |
+
+Both names are aliases. Each resolves to the newest model of its family, so
+when a new version comes out a role moves to it, and it never changes family.
+The manifest cannot change a role's model.
+
+What the manifest sets is thinking effort. A preset gives every role the same
+level:
+
+| Preset | every role |
+| --- | --- |
+| `economy` | medium |
+| `balanced` (default) | high |
+| `quality` | xhigh |
 
 A role set under `effort:` overrides the preset, and a module's own `effort`
 overrides `module_implementer` for that module (likewise `integration.effort`
@@ -951,6 +965,51 @@ for an unattended run, set `CLAUDE_CODE_WORKFLOWS=1` in the environment.
 
 **The workflow was interrupted.** Rerun the same command. Modules that already
 merged are skipped.
+
+## Eval results
+
+The planning step (`/module-pipeline:plan`) is checked with
+[`claude plugin eval`](https://code.claude.com/docs/en/plugin-evals). Each
+case gives the architect a spec in a scratch project and grades what it writes
+and what it says at hand-over. A case runs three times with the plugin and
+three times without it; a score is the weighted share of graders passed,
+averaged over the runs.
+
+Results for 0.9.3 (2026-10-03, WSL2, Claude Code 2.1.286):
+
+| Case | What a good run does | With plugin | Without |
+| --- | --- | --- | --- |
+| A CLI tool of a few hundred lines | Plans at most 2 modules, says one session is cheaper at this size, asks before committing | 1.00 | 0.16 |
+| The game spec from the first benchmark (1,700 lines when built) | Estimates at most 3,000 lines and at most 4 modules, settles the cross-module rules, lists its own decisions, asks before committing | 0.99 | 0.14 |
+| A spec that leaves the language open | Asks which language and waits; writes no manifest | 1.00 | 1.00 |
+| A project folder outside git | Says so and asks before `git init` | 1.00 | 0.25 |
+| An ordinary request, no slash command | Does not start planning | 1.00 | 1.00 |
+
+How to read them:
+
+- Without the plugin the slash command does not exist, so a low score in that
+  column is expected. The with-plugin column is the regression signal.
+- The language case and the ordinary request score 1.00 without the plugin
+  too. They show that the plugin does no harm there, not that it helps.
+- The suite caught the problem 0.9.3 fixed. Before the fix the architect
+  sometimes stopped to ask about gaps in the spec before writing anything, and
+  the first two cases scored 0.72 and 0.38.
+- The 0.99 is one run of three that failed one grader: its pattern did not
+  recognize "Agents: 8 in total". The pattern was widened afterwards and
+  checked against the stored messages, not re-run.
+- The 0.14 without the plugin was measured before the hand-over graders of
+  that case were rewritten, and was not re-run with the new ones.
+
+What they do not cover:
+
+- Only planning. `run`, `integrate` and `rework` start workflows with many
+  agents in worktrees, which an eval run cannot host; `npm test` covers them
+  with stand-in agents.
+- Not 0.10.0. That release moved the implementers and the integrator to Sonnet
+  and raised the default efforts; the suite has not been run since. Planning
+  itself still runs on Opus at `high`.
+
+The suite is not part of this repository yet.
 
 ## Repository layout and development
 

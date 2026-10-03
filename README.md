@@ -216,8 +216,10 @@ A full cycle on a small game, from spec to a merged branch.
 
 **1. Write a spec** and put it in the project, for example `docs/spec.md`. It
 should describe *finished* behavior: features, rules, numbers, screens and
-acceptance criteria. The architect is told not to invent missing rules; it asks
-you instead.
+acceptance criteria. The architect stops to ask you only when a gap changes the
+plan itself (the module map, folder layout or tooling, such as an open choice of
+language). Every other gap it decides, and it lists those decisions when it hands
+over, so you can object before anything is committed or built.
 
 **2. Plan:**
 

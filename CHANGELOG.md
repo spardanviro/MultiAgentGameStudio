@@ -3,6 +3,36 @@
 All notable changes to the module-pipeline plugin. Versions follow
 `plugins/module-pipeline/.claude-plugin/plugin.json`.
 
+## 0.9.3 - 2026-10-02
+
+Fixed:
+
+- A plan with one module could not register its cross-module rules file:
+  `shared_layer` demanded `task` or `existing`, which a one-module run does
+  not have. The architect wrote `docs/cross_module_rules.md` anyway and
+  pointed the prompts at it, so validate never checked the file and the
+  agents were not handed it. A run with one module may now write
+  `shared_layer` with `rules` alone; the file is checked for every topic
+  and passed to the agents like any other. Two or more modules still have
+  to name the shared layer itself.
+
+Changed:
+
+- The architect stops to ask only when a gap changes the plan itself: the
+  module map, the folder layout or the tooling (such as an open choice of
+  language). Every other gap, including behavior and wording the user will
+  see, it decides, marks as its own decision and lists at hand-over, where
+  the user can still object before anything is committed. Below 2,000
+  lines it still writes the whole plan and leaves the choice of a single
+  session to the hand-over. Before, it stopped mid-planning on such gaps in
+  some runs and decided them in others: in the eval suite it stopped before
+  writing anything in 1 of 3 runs of the small CLI spec and 2 of 3 of the
+  game spec (help text, error wording, whether a weapon fires at once).
+
+Checked with `claude plugin eval` (WSL2, three runs per arm): both
+one-module plans that reached the manifest wrote `shared_layer` with
+`rules` alone, and validate passed.
+
 ## 0.9.2 - 2026-10-02
 
 The sandbox cases 0.9.1 left untested were run for real (WSL2, Claude Code

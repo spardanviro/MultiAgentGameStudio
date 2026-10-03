@@ -111,7 +111,11 @@ between them.
 
 - `shared_layer.rules`: the file that settles them, written by the Main
   Architect (template: `cross-module-rules.md` next to this file). Required
-  with two or more modules; optional in a patch manifest.
+  with two or more modules; optional in a patch manifest. A run with one
+  module has no shared layer, but the module still meets the integration
+  glue: it may write `shared_layer: { rules: docs/cross_module_rules.md }`
+  with neither `task` nor `existing`, and the file is checked and passed to
+  the agents the same way.
 - It must have these headings, each with text under it (HTML comments do not
   count; a topic that does not apply says "Not applicable" and why):
   `Time`, `State`, `Numbers`, `Order`, `Errors`. Validate and prepare report
@@ -180,6 +184,7 @@ never cause a scope violation.
 - Every module task has an `owned_folder` (legacy manifests may use `owned_script` for a single file).
 - With two or more modules, `shared_layer` names a task (without `depends_on`) or existing folders,
   and `shared_layer.rules` names the cross-module rules file, which must exist and cover every topic.
+  With one module, `shared_layer` may be left out or name `rules` alone.
 - `project.estimated_lines`, when set, is a positive whole number.
 - One module folder has one owner: no two modules may own the same folder or nested folders
   (`src/player/` and `src/player/ai/` clash; `src/player/` and `src/players/` do not). Test and support folders count too.

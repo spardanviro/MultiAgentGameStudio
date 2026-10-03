@@ -15,10 +15,16 @@ You are the Main Architect for this project. Turn the implementation spec at
 without talking to each other. Use run id `$run` (if empty, use `run-001`, or
 the next free `run-NNN` if tasks/ already has manifests).
 
-The spec is finished and is the source of truth. Do not redesign the product
-or invent missing rules. When something the manifest depends on is genuinely
-ambiguous, ask the user here in the conversation and wait for the answer; do
-not guess and do not write a questions file.
+The spec is finished and is the source of truth. Do not redesign the product.
+Stop and ask the user, here in the conversation, only when the answer changes
+the plan itself: the module map, the folder layout or the tooling (for
+example, the spec leaves the language or the test runner open). Ask before
+you write any planning file, wait for the answer, and do not write a
+questions file. Every other gap, including behavior, wording and timing the
+user will see, you decide: take the reading that fits the spec best, mark it
+as your decision, and list it at hand-over (step 11). The user can still
+object there, before anything is committed or built, and a question in the
+middle of planning costs a round trip for each gap.
 
 You plan and scaffold; you do not implement. Other agents implement each
 module in parallel, reviewers check them, and an integration agent writes the
@@ -43,6 +49,9 @@ glue. Keep your own reading of the existing code to what planning needs.
    | 2,000-6,000 | 2-4 |
    | 6,000-15,000 | 4-10 |
    | over 15,000 | 8-20; if it needs more, split the spec into several runs |
+
+   Under 2,000 lines, still write the whole plan; say at hand-over that one
+   session would be cheaper, and let the user choose then.
 
    Every module costs an implementer and a reviewer session, usually a share
    of a rework round, and one more seam where modules can disagree. Too few
@@ -117,8 +126,8 @@ glue. Keep your own reading of the existing code to what planning needs.
      10-minute game shows 10:00).
 
    Take the answers from the spec where it has them. Where it does not,
-   decide and mark the rule as your decision; ask the user only when the
-   choice changes what the user sees. A topic that does not apply keeps its
+   decide and mark the rule as your decision; do not stop to ask about it
+   (see the top of this skill). A topic that does not apply keeps its
    heading and says so. Keep the file to one or two pages: every agent
    reads it.
 6. **Write the docs** (create or update):
@@ -172,7 +181,9 @@ glue. Keep your own reading of the existing code to what planning needs.
      to the estimate from step 2.
    - `shared_layer.task` to the shared-layer module (or
      `shared_layer.existing` to the folders that already hold it), and
-     `shared_layer.rules` to `docs/cross_module_rules.md`.
+     `shared_layer.rules` to `docs/cross_module_rules.md`. With one module
+     and no shared layer, write `shared_layer` with `rules` alone: the
+     module and the integration glue still have to agree.
    - `integration.acceptance` with the seam checks from step 5.
    - `diagnostics.compile_command` to the project's terminal build/typecheck
      command if it has one (for example `["npm", "run", "build"]`,
@@ -197,9 +208,10 @@ glue. Keep your own reading of the existing code to what planning needs.
 
 11. **Hand over.** Show the user a table of modules (id, owned folder, depends
    on, acceptance count), the waves, and `sizing` (estimated lines, module
-   count, recommended range) from the validate output. List the cross-module
-   rules that are your own decisions, not the spec's, one line each, so the
-   user can object before agents build on them. Then show the cost
+   count, recommended range) from the validate output. List every gap you
+   decided yourself, cross-module rules and everything else the spec left
+   open, one line each and the ones the user will see first, so the user
+   can object before agents build on them. Then show the cost
    picture from `estimate` in the validate output: the model every
    agent runs on, how many agents `/module-pipeline:run` and
    `/module-pipeline:integrate` will start by role, and each role's thinking

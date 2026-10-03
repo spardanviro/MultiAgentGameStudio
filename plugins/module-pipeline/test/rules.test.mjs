@@ -41,6 +41,32 @@ test('a run with two or more modules must name its cross-module rules file', () 
   assert.equal(parse(patch.replace(RULES_LINE, '')).sharedLayer.rules, null, 'but does not need them');
 });
 
+test('a run with one module may name the rules file alone, and it is checked and passed on like any other', () => {
+  const single = (section) =>
+    DEFAULT_MANIFEST.replace(`shared_layer:\n  existing: [src/common/]\n${RULES_LINE}`, section).split('  - id: enemy')[0] +
+    'integration:\n  prompt_file: work/prompts/integration.md\n  allowed_files:\n    - src/game/\n';
+  const rulesOnly = single(`shared_layer:\n${RULES_LINE}`);
+  assert.deepEqual(parse(rulesOnly).sharedLayer, { taskId: null, paths: [], rules: RULES });
+  assert.throws(() => parse(single('shared_layer: {}\n')), /shared_layer needs task .* or existing/);
+  assert.throws(
+    () => parse(DEFAULT_MANIFEST.replace('  existing: [src/common/]\n', '')),
+    /shared_layer needs task .*Only a run with one module may name rules alone/,
+    'two or more modules still name the layer itself',
+  );
+
+  const gaps = makeProject(rulesOnly);
+  write(gaps.root, RULES, RULES_TEXT.replace('## Order\n\nRule: decided.\n', ''));
+  assert.match(cli(gaps.root, 'validate', gaps.manifest).json.errors[0], /^shared_layer\.rules \(docs\/cross_module_rules\.md\) has no "Order" heading/);
+
+  const { root, manifest } = makeProject(rulesOnly);
+  assert.equal(cli(root, 'validate', manifest).json.ok, true);
+  assert.equal(prepareArgs(root, manifest).rules, RULES);
+  const worktree = makeAgentWorktree(root, 'rules-single');
+  const claim = cli(worktree, 'claim', '--run', 'run-001', '--task', 'player').json;
+  assert.equal(claim.rules, RULES);
+  assert.equal(claim.sharedLayer, null, 'no folder list when the run names only rules');
+});
+
 test('the rules file needs every topic, with text under each heading', () => {
   assert.deepEqual(checkRulesFile(RULES_TEXT), []);
   assert.deepEqual(RULE_TOPICS.map((topic) => topic.heading), ['Time', 'State', 'Numbers', 'Order', 'Errors']);

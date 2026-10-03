@@ -6,6 +6,7 @@
 //   run: { id, goal? }
 //   effort: { preset?, module_implementer?, module_reviewer?, integrator?, system_reviewer? }
 //   shared_layer: { task?, existing?, rules? }   # required with two or more modules; rules is the cross-module rules file
+//                                                # (one module may give rules alone)
 //   diagnostics: { compile_command?, test_command?: string | string[], timeout_ms? }
 //   generated_files: ["*.uid", ".godot/"]   # tool output dropped (not rejected) when outside a task's scope
 //   tasks:            # module tasks, one owned folder each
@@ -349,7 +350,9 @@ export function validateOwnership(tasks, integration) {
  * module agent writes its own copy and its own answer. A run with two or more
  * modules must name it: the module that builds it in this run (`task`: it runs
  * first and every other module depends on it), or the folders that already
- * hold it (`existing`, for rework runs and existing code bases).
+ * hold it (`existing`, for rework runs and existing code bases). A run with one
+ * module has no shared layer to name, but its module still meets the
+ * integration glue, so it may give `rules` alone.
  * @returns {{sharedLayer: object|null, tasks: object[]}} tasks with the shared dependency added
  */
 function resolveSharedLayer(raw, tasks) {
@@ -369,8 +372,13 @@ function resolveSharedLayer(raw, tasks) {
   }
   const taskId = section.task != null ? safeId(section.task, 'shared_layer.task') : null;
   const existing = uniqueScopes(asStringList(section.existing), 'shared_layer.existing entry');
-  if (!taskId && !existing.length) {
-    throw new Error('shared_layer needs task (the module that builds it) or existing (folders that already hold it).');
+  const rules = optionalPath(section.rules, 'shared_layer.rules');
+  // One module still has a seam with the integration glue, so it may name the rules file alone.
+  if (!taskId && !existing.length && (tasks.length >= 2 || !rules)) {
+    throw new Error(
+      'shared_layer needs task (the module that builds it) or existing (folders that already hold it). ' +
+        'Only a run with one module may name rules alone.',
+    );
   }
   const owner = taskId ? tasks.find((task) => task.id === taskId) : null;
   if (taskId && !owner) {
@@ -380,7 +388,6 @@ function resolveSharedLayer(raw, tasks) {
     throw new Error(`${taskId} builds the shared layer, so it runs first and cannot depend on other modules.`);
   }
   tasks.filter((task) => task.supportFolder && task.id !== taskId).forEach(rejectSupportFolder);
-  const rules = optionalPath(section.rules, 'shared_layer.rules');
   if (!rules && tasks.length >= 2) {
     throw new Error(
       'shared_layer.rules is required when a run has two or more modules: the file with the cross-module rules ' +

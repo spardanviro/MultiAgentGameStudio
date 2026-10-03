@@ -655,7 +655,7 @@ function cmdClaim({ flags }) {
     base: claim.base,
     syncedToRunBranch: synced,
     task: taskInfo(task),
-    sharedLayer: manifest.sharedLayer?.taskId === taskId ? null : manifest.sharedLayer?.paths || null,
+    sharedLayer: sharedFolders(manifest, taskId),
     rules: manifest.sharedLayer?.rules || null,
   };
 }
@@ -797,10 +797,16 @@ function cmdIntegrateTask({ flags }) {
       taskId,
       ...outcome,
       task: taskInfo(task),
-      sharedLayer: manifest.sharedLayer?.taskId === taskId ? null : manifest.sharedLayer?.paths || null,
+      sharedLayer: sharedFolders(manifest, taskId),
       rules: manifest.sharedLayer?.rules || null,
     };
   });
+}
+
+/** The shared-layer folders a task is told about: none for the shared-layer task itself, or when the run names only rules. */
+function sharedFolders(manifest, taskId) {
+  const layer = manifest.sharedLayer;
+  return layer && layer.taskId !== taskId && layer.paths.length ? layer.paths : null;
 }
 
 function requireRunState(root, runId) {

@@ -3,6 +3,30 @@
 All notable changes to the module-pipeline plugin. Versions follow
 `plugins/module-pipeline/.claude-plugin/plugin.json`.
 
+## 0.11.0 - 2026-10-03
+
+Changed:
+
+- `/module-pipeline:run` goes on to the integration by itself when the
+  module stage passes and the manifest has an integration stage, so a run
+  needs one command where it needed two. `record` makes the integration's
+  checks while it finishes the module stage and prints what the workflow
+  needs as `continueWith` (workflow script, args and the agents it starts);
+  the session starts the integration from that without a second `prepare`.
+- `/module-pipeline:run --modules-only` stops after the module stage, as
+  before. The run also stops there when the main checkout holds uncommitted
+  files no merge wrote: it lists them and leaves the integration to
+  `/module-pipeline:integrate`, which is otherwise only needed in those two
+  cases or to integrate although the module stage did not pass.
+
+Checked with a real run (WSL2, Claude Code 2.1.286, a planned project with
+one module and glue): one `/module-pipeline:run` ran both stages in 8 calls
+of the main session (prepare, the module workflow, record, the integration
+workflow, record) and ended `passed`, ready for `finish`. In the 0.9.x test
+runs `run` and `integrate` took a median of 5 calls each, in two commands.
+The same run is the first real one on 0.10.0's models: the implementer and
+the integrator ran on Sonnet, both reviewers on Opus.
+
 ## 0.10.0 - 2026-10-03
 
 Changed:

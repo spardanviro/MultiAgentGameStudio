@@ -1,7 +1,7 @@
 export const meta = {
   name: 'module-pipeline-integrate',
   description: 'Write glue code for merged modules in an isolated worktree; the system reviewer commits it, runs diagnostics and reviews the whole system against the spec',
-  whenToUse: 'Invoked by /module-pipeline:integrate with the workflowArgs that `pipeline.mjs prepare --stage integration` printed.',
+  whenToUse: 'Invoked by /module-pipeline:integrate with the workflowArgs that `pipeline.mjs prepare --stage integration` printed, or by /module-pipeline:run with the `continueWith` of `pipeline.mjs record`.',
   phases: [
     { title: 'Integrate', detail: 'integration agent in an isolated worktree' },
     { title: 'Review', detail: 'commit the glue, run diagnostics, review the whole system against the spec' },

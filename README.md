@@ -159,7 +159,7 @@ flowchart TD
     R --> wave
     wave --> D[diagnostics<br/>build + test suite]
     D --> G{gate}
-    G -->|passed| INT["/module-pipeline:integrate<br/>glue + system review"]
+    G -->|passed| INT["integration, started by run<br/>glue + system review"]
     G -->|anything else| RW["/module-pipeline:rework"]
     INT -->|passed| MERGE["/module-pipeline:finish<br/>you merge or open a PR"]
     INT -->|anything else| RW
@@ -260,7 +260,7 @@ xhigh, system reviewer on max", switch the preset, or give one hard module
 If the plan looks right, say yes. It then commits the planning output on the new
 branch `multiagent-runs/run-001`.
 
-**3. Run the modules:**
+**3. Run the modules and the integration:**
 
 ```
 /module-pipeline:run
@@ -272,8 +272,12 @@ At the end you get a table of modules with their status and an overall gate
 status. While it runs you can `git switch main` and keep working; the run does
 not need the main checkout.
 
-**4. Integrate** (if the gate is `passed` and the manifest has an integration
-section):
+If the gate is `passed` and the manifest has an integration section, the same
+command goes straight on to the integration: the glue code, the full
+diagnostics and the system review. You do not type a second command.
+
+**4. Integrate by hand** (only if you ran step 3 with `--modules-only`, or it
+stopped before the integration to ask you about stray files):
 
 ```
 /module-pipeline:integrate
@@ -350,7 +354,7 @@ the next free `run-NNN`.
 - **Asks before committing.** With your yes, it switches to
   `multiagent-runs/<run-id>` and commits the planning output there.
 
-### `/module-pipeline:run [manifest]`
+### `/module-pipeline:run [manifest] [--modules-only]`
 
 The default manifest is `tasks/task_manifest.yaml`.
 
@@ -387,11 +391,19 @@ The default manifest is `tasks/task_manifest.yaml`.
    `.multiagent/pipeline/runs/`, and compares the source lines built with
    the plan's estimate.
 4. Shows you the gate status, the blocking items and the next command.
+5. If the module stage passed and the manifest has an integration stage, it
+   starts the integration at once, as `/module-pipeline:integrate` would, and
+   reports its result too. `record` has already made the integration's checks
+   and hands over what the workflow needs (`continueWith`), so this costs no
+   extra step. It does not go on when you passed `--modules-only`, or when a
+   build, an agent's shell or you left uncommitted files in the main checkout:
+   then it shows them and leaves the integration to you.
 
 ### `/module-pipeline:integrate [manifest]`
 
 This is the stage for the glue code: scene setup, wiring and the main loop. It
-runs after every module is merged.
+runs after every module is merged. `/module-pipeline:run` starts it by itself
+when the module stage passes; use this command when it did not.
 
 - Warns you and asks for confirmation if the module stage did not pass.
 - Starts the `module-pipeline-integrate` workflow. An `integrator` agent works in

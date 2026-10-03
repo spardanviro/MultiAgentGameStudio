@@ -130,6 +130,73 @@ test('record takes the bare result of the integration and patch stages, and refu
   assert.match(cli(root, 'record', '--from', path.join(root, '.multiagent', 'unknown.json')).json.error, /No pipeline run run-404/);
 });
 
+test('record hands a passed module stage straight to the integration, so one command runs both', async () => {
+  const { root, manifest, output } = await moduleStage(DEFAULT_MANIFEST);
+  const recorded = cli(root, 'record', '--from', output).json;
+  assert.equal(recorded.next, 'integrate');
+  const { continueWith } = recorded;
+  assert.equal(continueWith.stage, 'integration');
+  assert.match(continueWith.workflowScript, /\.multiagent\/pipeline\/workflows\/integrate-system\.js$/);
+  assert.deepEqual(continueWith.agents.map((row) => [row.role, row.count, row.model]), [['integrator', 1, 'sonnet'], ['system-reviewer', 1, 'opus']]);
+  const prepared = cli(root, 'prepare', manifest, '--stage', 'integration').json;
+  assert.deepEqual(continueWith.workflowArgs, prepared.workflowArgs, 'the same args the integrate command would get from prepare');
+
+  // The session starts the integration with those args and records it: the run is ready to finish.
+  const { result } = await runWorkflow('integrate-system', {
+    root,
+    args: continueWith.workflowArgs,
+    scenario: {
+      integrate: ({ write: writeFile }) => {
+        writeFile('src/game/main.gd', 'extends Node\n');
+        writeFile('work/integration/run-001_integration_report.md', 'wired\n');
+        return { summary: 'wired', executionOrder: 'player, enemy, hud', testsRun: 'none', blockers: [] };
+      },
+      systemReview: () => ({ verdict: 'pass', summary: 'Meets the spec.', spec_coverage: [{ feature: 'Player', status: 'done' }], rework_items: [] }),
+    },
+  });
+  write(root, '.multiagent/integration-output.json', JSON.stringify({ result }));
+  const finished = cli(root, 'record', '--from', path.join(root, '.multiagent', 'integration-output.json')).json;
+  assert.equal(finished.status, 'passed', JSON.stringify(finished));
+  assert.equal(finished.nextCommand, '/module-pipeline:finish run-001');
+  assert.equal(finished.continueWith, undefined, 'nothing follows the integration');
+});
+
+test('record hands over nothing when the module stage did not pass, has no integration, or left stray files', async () => {
+  const failed = await moduleStage(FAILING_TESTS);
+  const failedRecord = cli(failed.root, 'record', '--from', failed.output).json;
+  assert.equal(failedRecord.status, 'diagnostics_failed');
+  assert.equal(failedRecord.continueWith, undefined);
+
+  const noGlue = await moduleStage(DEFAULT_MANIFEST.replace(/integration:\n[\s\S]*$/, ''));
+  const noGlueRecord = cli(noGlue.root, 'record', '--from', noGlue.output).json;
+  assert.equal(noGlueRecord.next, 'finish');
+  assert.equal(noGlueRecord.continueWith, undefined);
+
+  // A file written around the pipeline blocks the integration's own checks, so the user is asked first.
+  const stray = await moduleStage(DEFAULT_MANIFEST);
+  write(stray.root, 'build/output.log', 'left by a build\n');
+  const strayRecord = cli(stray.root, 'record', '--from', stray.output).json;
+  assert.equal(strayRecord.status, 'passed');
+  assert.ok(strayRecord.strayChanges.some((file) => file.startsWith('build/')), JSON.stringify(strayRecord.strayChanges));
+  assert.equal(strayRecord.continueWith, undefined);
+  assert.equal(strayRecord.nextCommand, '/module-pipeline:integrate tasks/task_manifest.yaml');
+});
+
+test('the run skill starts the integration from the fields record prints, and can be told to stop before it', async () => {
+  const skill = fs.readFileSync(new URL('../skills/run/SKILL.md', import.meta.url), 'utf8');
+  const { root, output } = await moduleStage(DEFAULT_MANIFEST);
+  const { continueWith } = cli(root, 'record', '--from', output).json;
+  // Every field of the hand-over the skill names is one record really prints.
+  const named = [...skill.matchAll(/continueWith\.([A-Za-z]+)/g)].map((match) => match[1]);
+  assert.deepEqual([...new Set(named)].sort(), ['workflowArgs', 'workflowScript']);
+  for (const field of named) {
+    assert.ok(continueWith[field], `record prints continueWith.${field}`);
+  }
+  assert.match(skill, /argument-hint: "\[manifest-path\] \[--modules-only\]"/);
+  assert.match(skill, /`--modules-only` stops after\s+the module stage/);
+  assert.match(skill, /do not run prepare again/);
+});
+
 test('prepare alone tells the session what to ask and what to announce', () => {
   const { root, manifest } = makeProject();
   write(root, 'docs/notes.md', 'planning output\n');

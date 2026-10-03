@@ -891,6 +891,24 @@ const NEXT_COMMAND = {
 };
 
 /**
+ * What the session needs to start the integration right after a passed module
+ * stage, so the user does not have to type a second command: the same checks
+ * and workflow args `prepare --stage integration` gives. Null when that
+ * prepare finds a problem (for example stray changes in the main checkout);
+ * the user then runs the integrate command, which shows it.
+ */
+function integrationHandover(state) {
+  try {
+    const prepared = cmdPrepare({ positional: [state.manifestPath], flags: { stage: 'integration' } });
+    return prepared.ok
+      ? { stage: 'integration', workflowScript: prepared.workflowScript, workflowArgs: prepared.workflowArgs, agents: prepared.estimate.integrate }
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Finishes a stage after its workflow returned: runs the diagnostics of the
  * module stage, writes the result and the report beside the run state, and
  * prints only what the session has to tell the user.
@@ -938,6 +956,7 @@ function cmdRecord({ flags }) {
     status: result.status,
     next: result.next,
     nextCommand: NEXT_COMMAND[result.next](runId, manifestArg),
+    continueWith: (result.next === 'integrate' && integrationHandover(state)) || undefined,
     modules: (result.modules || []).map((module) => ({ task: module.task, status: module.status, reason: module.reason || module.error || undefined })),
     merge: stage === 'modules' ? undefined : (result.integration || result.merge || null),
     diagnostics: diagnosticsLine(result.diagnostics),

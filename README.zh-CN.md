@@ -119,7 +119,7 @@ flowchart TD
     R --> wave
     wave --> D[诊断<br/>构建 + 测试套件]
     D --> G{关卡}
-    G -->|passed| INT["/module-pipeline:integrate<br/>胶水代码 + 系统审查"]
+    G -->|passed| INT["集成（由 run 自动接着做）<br/>胶水代码 + 系统审查"]
     G -->|其他状态| RW["/module-pipeline:rework"]
     INT -->|passed| MERGE["/module-pipeline:finish<br/>由你合并或开 PR"]
     INT -->|其他状态| RW
@@ -207,7 +207,7 @@ flowchart TD
 
 计划没问题就回答"是"。它会在新分支 `multiagent-runs/run-001` 上提交这些规划产物。
 
-**3. 实现模块：**
+**3. 实现模块并集成：**
 
 ```
 /module-pipeline:run
@@ -218,7 +218,11 @@ flowchart TD
 用 `/workflows` 查看进度。结束时你会看到每个模块的状态表和一个总体关卡状态。运行期间你可以
 `git switch main` 继续干自己的活，运行过程不需要占用主工作区。
 
-**4. 集成**（关卡状态为 `passed`，且 manifest 里有 integration 段时）：
+如果关卡状态是 `passed`，而且 manifest 里有 integration 段，这条命令会直接接着做集成：写胶水代码、
+跑完整诊断、做系统审查。不用再输第二条命令。
+
+**4. 手动集成**（只在第 3 步加了 `--modules-only`，或者它因为主工作区里有来历不明的未提交文件、
+停下来问你的时候才需要）：
 
 ```
 /module-pipeline:integrate
@@ -276,7 +280,7 @@ flowchart TD
   调整某个职责的思考强度。
 - **提交前先征求你同意。** 你同意后，它切换到 `multiagent-runs/<run-id>` 分支并在那里提交规划产物。
 
-### `/module-pipeline:run [manifest]`
+### `/module-pipeline:run [manifest] [--modules-only]`
 
 默认 manifest 是 `tasks/task_manifest.yaml`。
 
@@ -300,10 +304,15 @@ flowchart TD
    跳过测试），把结果 JSON 和可读报告保存到 `.multiagent/pipeline/runs/`，并把实际写出的源码行数和规划时的
    估计放在一起对比。
 4. 告诉你关卡状态、阻塞项和下一条命令。
+5. 如果模块阶段通过，而且 manifest 里有集成阶段，它会立刻开始集成（和 `/module-pipeline:integrate` 做的
+   一样），并把集成的结果也报告给你。`record` 已经替集成阶段做完了检查，并把工作流需要的参数一并给出
+   （`continueWith`），所以不多花一步。两种情况下它不会接着做：你加了 `--modules-only`；或者主工作区里
+   有构建命令、智能体的 shell 或你自己留下的未提交文件。后一种情况它会把文件列出来，集成留给你来启动。
 
 ### `/module-pipeline:integrate [manifest]`
 
-这是写胶水代码的阶段：场景搭建、模块之间的连接、主循环等。它在所有模块都合并之后运行。
+这是写胶水代码的阶段：场景搭建、模块之间的连接、主循环等。它在所有模块都合并之后运行。模块阶段通过时，
+`/module-pipeline:run` 会自动开始这个阶段；没有自动开始时才需要用这条命令。
 
 - 如果模块阶段没有通过，会先提醒你并请你确认是否继续。
 - 启动 `module-pipeline-integrate` 工作流。`integrator` 智能体在 worktree 里工作，只能写

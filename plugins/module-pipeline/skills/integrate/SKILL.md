@@ -10,6 +10,11 @@ effort: medium
 
 # Run the integration stage
 
+`/module-pipeline:run` goes on to this stage by itself when the module stage
+passes. Use this command when it did not: after `--modules-only`, after stray
+changes were sorted out, or to integrate although the module stage did not
+pass.
+
 Manifest: `$manifest` (if empty, use `tasks/task_manifest.yaml`). Resolve it
 to an absolute path; call that MANIFEST below. CLI below means
 `node "${CLAUDE_PLUGIN_ROOT}/scripts/pipeline.mjs"`.

@@ -15,10 +15,12 @@ A Claude Code plugin that runs a spec-driven, multi-agent build:
    module in parallel, one agent per module in an isolated worktree, in
    dependency waves. Each module's reviewer audits it against its scope,
    commits it on the run branch and reviews it read-only; then the build and
-   test commands run on the run branch.
+   test commands run on the run branch. When that passes, it goes straight on
+   to the integration (`--modules-only` stops before it).
 3. **`/module-pipeline:integrate [manifest]`**: an integration agent writes the
    glue code; the system reviewer commits it, runs diagnostics and checks the
-   whole result against the spec.
+   whole result against the spec. `run` starts this by itself; the command is
+   for the cases where it did not.
 4. **`/module-pipeline:rework <run-id>`**: the Main Architect decides every
    failure and blocking review item and writes the next run's manifest. When
    every item is a small local fix, it writes a *patch* instead: one patcher

@@ -1,8 +1,7 @@
 ---
 name: run
-description: Implement every pending module of a task manifest in parallel isolated worktrees, commit in-scope work on the run branch, review each module, and report the gate.
-argument-hint: "[manifest-path]"
-arguments: [manifest]
+description: Implement every pending module of a task manifest in parallel isolated worktrees, commit in-scope work on the run branch, review each module, report the gate, and go straight on to the integration when it passes.
+argument-hint: "[manifest-path] [--modules-only]"
 disable-model-invocation: true
 model: opus
 effort: medium
@@ -10,8 +9,10 @@ effort: medium
 
 # Run the module stage
 
-Manifest: `$manifest` (if empty, use `tasks/task_manifest.yaml`). Resolve it
-to an absolute path; call that MANIFEST below. The file need not be in the
+Arguments: `$ARGUMENTS`. A word starting with `--` is a flag; the other word
+is the manifest (if there is none, use `tasks/task_manifest.yaml`). Resolve it
+to an absolute path; call that MANIFEST below. `--modules-only` stops after
+the module stage instead of going on to the integration (step 4). The file need not be in the
 working tree: when the main checkout is on another branch, the CLI reads it
 from the run branch. CLI below means
 `node "${CLAUDE_PLUGIN_ROOT}/scripts/pipeline.mjs"`.
@@ -45,8 +46,10 @@ checks the session and the checkout, and returns what the workflow needs.
 
 Tell the user in two or three lines how many modules run in how many waves,
 and how many agents that starts on which model at which thinking effort
-(`estimate.run`). Mention that they may switch the main
-checkout to another branch and keep working while it runs. This command
+(`estimate.run`). When `estimate.integrate` is not empty and
+`--modules-only` was not given, add that the integration (those agents)
+starts by itself if the module stage passes. Mention that they may switch the
+main checkout to another branch and keep working while it runs. This command
 invocation is the user's authorization. Start the workflow with the
 `workflowScript` and `workflowArgs` from the prepare output, exactly as
 printed:
@@ -98,6 +101,7 @@ Tell the user, briefly, from that output alone:
   delete or commit them yourself.
 - The next step: `nextCommand`. For anything other than `passed` that is
   `/module-pipeline:rework <runId>`; do not fix module code yourself here.
+  When the output has `continueWith`, the next step is step 4 instead.
 
 Statuses of the module stage: `passed` (every module merged, no blocking
 review item, diagnostics clean), `rework_required` (blocking review items),
@@ -109,3 +113,33 @@ return, and `CLI status --run <runId>` shows whether it merged anyway),
 Statuses of a patch run: `passed`, `patch_too_large` (over its line limit,
 nothing merged, worktree kept; the next rework takes the module path),
 `patch_failed`, `rework_required`, `diagnostics_failed`, `review_missing`.
+
+## 4. Go on to the integration
+
+Only when the record output has `continueWith` and `--modules-only` was not
+given. `continueWith` is there when the module stage passed, the manifest has
+an integration stage and its checks found nothing to ask about; the CLI has
+already made them, so do not run prepare again. Keep the report of step 3 to
+the module table and one line, then start the integration with what
+`continueWith` holds, exactly as printed:
+
+```
+Workflow({
+  scriptPath: <continueWith.workflowScript>,
+  args: <continueWith.workflowArgs>
+})
+```
+
+The integrator writes the glue in an isolated worktree. The system reviewer
+then commits it on the run branch, runs diagnostics, reviews the whole
+result against the spec, and audits every cross-module rule.
+
+When it finishes, run `CLI record --from "<its output file>"` again and tell
+the user from that output alone: `status`, the `diagnostics` line,
+`ruleViolations` and `coverageGaps` if any, the blocking `items` (one line
+each), where the report is, `strayChanges` if any, and `nextCommand`
+(`/module-pipeline:finish <runId>` when it passed, otherwise
+`/module-pipeline:rework <runId>`). Do not merge the run branch yourself here.
+
+Without `continueWith` after a passed module stage (stray changes, or
+`--modules-only`), the user starts the integration with `nextCommand`.
